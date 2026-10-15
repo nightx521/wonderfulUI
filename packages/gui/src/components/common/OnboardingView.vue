@@ -5,7 +5,7 @@
         <img class="onboarding-logo" :src="brandLogoUrl" alt="" aria-hidden="true" width="48" height="48" decoding="async" />
         <h1 id="onboarding-title" class="onboarding-title">欢迎使用 WonderfulUI</h1>
         <p class="onboarding-sub">
-          WonderfulUI 是用于整理和回看本地无畏契约高光的个人资料库。它只读取 ACLOS 已生成的数据，不修改游戏文件；快传只在你主动开启时使用局域网。
+          WonderfulUI 是用于整理和回看本地无畏契约高光的个人资料库。它只读取 ACLOS 已生成的数据，不修改游戏文件；应用会检查项目更新，快传只在你主动开启时使用局域网。
         </p>
       </header>
 

@@ -5,6 +5,7 @@
 import { onMounted, onUnmounted } from 'vue';
 import { usePlayerStore } from '../stores/player.ts';
 import { useSettingsStore } from '../stores/settings.ts';
+import { useUpdateStore } from '../stores/update.ts';
 import { useShareStore } from '../stores/share.ts';
 import { useAccountStore } from '../stores/account.ts';
 import { useFilterStore } from '../stores/filter.ts';
@@ -41,6 +42,7 @@ function focusSearchInput(): void {
 export function useAppShortcuts(): void {
   const player = usePlayerStore();
   const settings = useSettingsStore();
+  const update = useUpdateStore();
   const share = useShareStore();
   const account = useAccountStore();
   const filter = useFilterStore();
@@ -51,7 +53,9 @@ export function useAppShortcuts(): void {
   }
 
   function closeTopLayer(): boolean {
+    if (update.modalOpen && (update.status === "downloading" || update.status === "installing")) return true;
     const layer = nextCloseableLayer({
+      updateCloseable: update.modalOpen && (update.status === "available" || update.status === "error"),
       shareOpen: isShareOpen(),
       settingsOpen: settings.isOpen,
       playerOpen: player.isOpen,
@@ -62,6 +66,9 @@ export function useAppShortcuts(): void {
     if (clickLayerCloseButton(layer)) return true;
     // Fallbacks if the button is not mounted yet
     switch (layer) {
+      case 'update':
+        update.dismiss();
+        break;
       case 'share':
         void share.stop();
         break;

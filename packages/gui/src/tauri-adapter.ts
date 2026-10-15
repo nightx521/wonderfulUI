@@ -371,6 +371,8 @@ async function mockInvoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       if (!match) throw new Error(`debug match not found: ${String(matchId)}`);
       return deepClone(match) as T;
     }
+    case 'check_project_update':
+      return null as T;
     case 'cache_asset':
       return String(args?.url ?? '') as T;
     case 'cache_assets': {

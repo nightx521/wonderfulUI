@@ -1,37 +1,45 @@
-# 安装与升级
+# 更新与安装
 
-当前项目：[nightx521/wonderfulUI](https://github.com/nightx521/wonderfulUI)。
-这是 murainy 基于 WizisCool 原项目维护的修改版；源代码仓库为私密仓库。
+项目地址：[nightx521/wonderfulUI](https://github.com/nightx521/wonderfulUI)。
+本修改版由 murainy 维护，保留 WizisCool 原作者版权及 GPL-3.0-or-later。
+开发仓库目前暂为私密，未来公开由维护者决定；当前不向普通用户提供匿名私密资源访问。
 
-## 版本交付
+## 更新方式
 
-- 唯一 Windows 发布产物为 `WonderfulUI_<version>_x64-setup.exe`。
-- 使用 Tauri 2 和现有 NSIS 模板构建，附带 LICENSE 与 NOTICE.md。
-- 用户从维护者提供的可信位置获取对应版本安装器，并核对校验值。
-- 私密 GitHub 仓库和 Releases 仅对获授权访问者开放。
+主界面显示后进行一次静默检查。关于页的更新按钮可手动检查，右侧小箭头选择：
 
-## 覆盖升级
+- 代理加速（默认）：https://github.murainy.com/ 加完整官方 GitHub 文件地址。
+- GitHub 直连：直接访问项目 GitHub Releases。
 
-手动安装器默认选择“覆盖升级（保留资料和设置）”，沿用已登记的安装目录。
-同版本可覆盖安装/修复；无需先卸载。覆盖安装不会清理应用资料目录。
-安装和 /UPDATE 路径均保持现有快传防火墙规则的幂等配置。
+两种方式统一用于读取 latest.json 和下载安装包，选择保存到 wui:update.channel。
+切换线路会失效旧检查、清除旧提示并允许重新检查；旧请求不能覆盖新状态。
+下载/安装期间锁定线路。启动失败静默记录，手动失败显示简短原因并允许重试。
+暂时私密或尚无 Release 时，获取更新可能失败；完整线上升级需公开并发布新版后验收。
 
-本修改版使用手动升级，已移除原项目的启动更新检查、关于页更新按钮和更新插件。
-现有私密仓库不提供可供普通安装用户匿名访问的更新资源；不得把访问令牌打包到应用中。
+## 后端与签名
 
-## 从打包开发工具代安装
+check_project_update 只接受 proxy/github 枚举，固定项目为 nightx521/wonderfulUI。
+检查超时 20 秒；下载超时 300 秒。安装包地址必须对应此项目、v<version> tag 和
+WonderfulUI_<version>_x64-setup.exe 文件。后端重写选定线路后保留官方 Update 资源，
+前端使用官方 SDK downloadAndInstall，下载后必须通过本修改版公钥签名校验。
+版本比较沿用官方行为，不允许通过检查参数启用降级。
 
-MSIX 工具启动的安装器如果通过 /R 恢复应用，子进程可能继承工具的文件系统重定向。
-这会读取另一份资料库，表现为原有导入数据不见了。
-本地代安装应覆盖现有安装，等待安装器自身退出，再由 Windows 资源管理器启动应用。
-核对实际用户资料目录的新启动日志、导入表与账号偏好，而不能只证明某个数据库仍存在。
-不要通过硬编码用户路径或覆盖两份数据库来解决启动环境问题。
+本机私钥保存在仓库外的用户 .tauri 目录，文件名 wonderfului-murainy.key；
+公钥写入 Tauri 配置，私钥配置为该仓库的 TAURI_SIGNING_PRIVATE_KEY Actions secret。
+当前私钥口令为空。维护者应妥善保管私钥，不能提交到源码或打包进客户端。
+Windows 发布者证书签名是另一机制，不因生成 updater 签名而自动获得。
 
-## 构建与源码
+## 构建与发布
 
-bun run build 构建 NSIS 安装包，不依赖原项目的 updater 密钥。
-scripts/check-versions.ts 检查版本同步和手动分发配置；发布工作流保留验证、构建和
-显式 tag 发布安装器的流程。上传源代码不创建 tag 或公开 Release。
+bun run build 需要通过环境变量提供私钥路径或内容；可选口令使用
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD。生产配置生成安装包与 .exe.sig。
+显式 tag 发布工作流验证版本、构建签名安装器，并生成含官方地址与签名的 latest.json。
+仓库改公开和创建 Release 均需用户单独明确要求，普通源码上传不触发这些动作。
 
-分发安装包时应保留原作者、修改者和 GPL 文本，并按 GPL 向接收者提供对应源码。
-Windows 发布者代码签名是单独的分发设置；当前不宣称安装包已获得该签名。
+## 覆盖安装
+
+NSIS 默认覆盖升级并沿用已登记目录，保留现有资料和设置；安装和 /UPDATE
+路径保持快传防火墙规则的幂等配置。随包保留 LICENSE 与 NOTICE.md。
+MSIX 开发工具代安装时，不用安装器 /R 恢复应用；等待安装器退出后通过资源管理器
+启动，核对实际用户资料目录的新启动日志、导入表与账号偏好，避免继承工具的目录重定向。
+分发安装包时按 GPL 向接收者提供对应源码。

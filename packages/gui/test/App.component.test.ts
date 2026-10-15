@@ -6,6 +6,7 @@ import { setActivePinia } from 'pinia';
 import * as tauriAdapter from '../src/tauri-adapter.ts';
 import { useAccountStore } from '../src/stores/account.ts';
 import { useUiStore } from '../src/stores/ui.ts';
+import { useUpdateStore } from '../src/stores/update.ts';
 import App from '../src/App.vue';
 
 const BootOverlayStub = defineComponent({
@@ -68,6 +69,7 @@ describe('App startup refresh lifecycle', () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await flushPromises();
     expect(wrapper.find('.app').exists()).toBe(true);
+    expect(useUpdateStore().debugAvailable).toHaveBeenCalledWith({ silent: true });
     expect(unlisten).not.toHaveBeenCalled();
 
     terminalHandler({ payload: { status: 'finished' } });

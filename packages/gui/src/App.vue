@@ -17,6 +17,7 @@
       </Teleport>
       <ToastHost />
       <SettingsView v-if="settings.isOpen" />
+      <UpdateModal />
     </template>
   </div>
 </template>
@@ -32,6 +33,9 @@ import FilterRail from './components/match/FilterRail.vue';
 import ToastHost from './components/common/ToastHost.vue';
 import DetailView from './views/DetailView.vue';
 import OnboardingView from './components/common/OnboardingView.vue';
+import UpdateModal from './components/update/UpdateModal.vue';
+import { useUpdateStore } from './stores/update.ts';
+import { installUpdateDebug } from './utils/update-debug.ts';
 import {
   watch,
   onMounted,
@@ -57,6 +61,7 @@ const filter = useFilterStore();
 const account = useAccountStore();
 const ui = useUiStore();
 const settings = useSettingsStore();
+const update = useUpdateStore();
 const SettingsView = defineAsyncComponent(() => import('./views/SettingsView.vue'));
 const bootRef = ref<InstanceType<typeof BootOverlay> | null>(null);
 const booted = ref(false);
@@ -268,6 +273,8 @@ async function performBoot() {
     selectInitialAccount();
     booted.value = true;
     bootRef.value?.complete();
+    if (import.meta.env.DEV) update.debugAvailable({ silent: true });
+    else void update.checkForUpdate(true);
   } catch (e) {
     if (appDisposed) return;
     bootError.value = (e as Error)?.message ?? String(e);
@@ -289,6 +296,7 @@ async function retryBoot() {
 useAppShortcuts();
 
 onMounted(() => {
+  installUpdateDebug(() => update);
   void runBoot();
 });
 

@@ -80,6 +80,7 @@
       >
         <WIcon icon="ph:gear" :size="14" />
         <span>设置</span>
+        <span v-if="update.badge" class="pane-foot-badge" aria-hidden="true" />
       </button>
       <button
         class="pane-foot-version"
@@ -110,20 +111,27 @@ import { useFilterStore } from '../../stores/filter.ts';
 import { useSettingsStore } from '../../stores/settings.ts';
 import { useUiStore } from '../../stores/ui.ts';
 import { APP_VERSION } from '../../utils/version.ts';
+import { useUpdateStore } from '../../stores/update.ts';
 import { accountReadFeedback } from '../../utils/account-status.ts';
 
 const account = useAccountStore();
 const filterStore = useFilterStore();
 const settings = useSettingsStore();
 const ui = useUiStore();
+const update = useUpdateStore();
 
 function onSettingsClick() {
   settings.setOpen(true);
 }
 
 function onVersionClick() {
+  if (update.badge && update.update) {
+    update.openModal();
+    return;
+  }
   settings.setTab('about');
   settings.setOpen(true);
+  void update.checkForUpdate(false);
 }
 
 const editingOpenid = ref<string | null>(null);

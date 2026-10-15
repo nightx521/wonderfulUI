@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "WonderfulUI",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "identifier": "app.local.wonderfului",
   "build": {
     "frontendDist": "../packages/gui/dist",
@@ -81,7 +81,7 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "targets": [
       "nsis"
     ],
@@ -107,5 +107,15 @@
       "../NOTICE.md": "NOTICE.md"
     }
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.murainy.com/https://github.com/nightx521/wonderfulUI/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRGQTdDNEU0Mjg4MEMyRTQKUldUa3dvQW81TVNuVDNocGVpd2ZOZlVXRVZHVU5Fby82Q3hML2QvZm5OazI3R1prQXJKZGVia2EK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
 }

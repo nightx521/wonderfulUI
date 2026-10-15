@@ -273,6 +273,24 @@
               <span>GPL-3.0-or-later</span>
             </button>
           </div>
+          <div class="settings-about-update">
+            <div class="settings-update-buttons">
+              <button class="btn settings-action" type="button" :disabled="isUpdateBusy" :aria-busy="isUpdateBusy" @click="onCheckUpdate">
+                <WIcon icon="ph:arrows-clockwise" :size="14" />
+                <span>{{ updateActionLabel }}</span>
+              </button>
+              <div class="settings-update-picker">
+                <select aria-label="更新方式" :title="`更新方式：${update.channel === 'proxy' ? '代理加速' : 'GitHub直连'}`"
+                  :value="update.channel" :disabled="update.status === 'downloading' || update.status === 'installing'"
+                  @change="update.setChannel(($event.target as HTMLSelectElement).value as UpdateChannel)">
+                  <option value="proxy">代理加速（默认）</option>
+                  <option value="github">GitHub直连</option>
+                </select>
+                <WIcon icon="ph:caret-down" :size="12" aria-hidden="true" />
+              </div>
+            </div>
+            <span class="settings-update-channel">{{ update.channel === 'proxy' ? '代理加速 · github.murainy.com' : 'GitHub直连' }}</span>
+          </div>
         </div>
       </template>
     </main>
@@ -288,6 +306,8 @@ import { useAccountStore } from '../../stores/account.ts';
 import { useFilterStore } from '../../stores/filter.ts';
 import { useSettingsStore } from '../../stores/settings.ts';
 import { useUiStore } from '../../stores/ui.ts';
+import { useUpdateStore } from '../../stores/update.ts';
+import type { UpdateChannel } from '../../utils/project-updater.ts';
 import { invoke } from '../../tauri-adapter.ts';
 import { clientLog } from '../../utils/client-log.ts';
 import { SCAN_FAILURE_MESSAGE, scanCompletionFeedback } from '../../utils/scan-feedback.ts';
@@ -299,6 +319,16 @@ const account = useAccountStore();
 const filter = useFilterStore();
 const settings = useSettingsStore();
 const ui = useUiStore();
+const update = useUpdateStore();
+
+const isUpdateBusy = computed(() => ['checking', 'downloading', 'installing'].includes(update.status));
+const updateActionLabel = computed(() => update.status === 'checking' ? '检查中…'
+  : update.badge && update.update ? `有新版本 v${update.update.version} →`
+  : update.status === 'uptodate' ? '已是最新版本' : '检查更新');
+function onCheckUpdate() {
+  if (update.badge && update.update) update.openModal();
+  else void update.checkForUpdate(false);
+}
 
 const brandLogoUrl = new URL('../../assets/logo.svg', import.meta.url).href;
 
@@ -945,4 +975,18 @@ watch(() => settings.activeTab, (tab) => {
     width: 100%;
   }
 }
+.settings-about-update { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 18px; }
+.settings-update-buttons { display: inline-flex; align-items: stretch; }
+.settings-update-buttons > .btn { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.settings-update-picker { position: relative; display: flex; width: 32px; }
+.settings-update-picker select {
+  appearance: none; width: 100%; cursor: pointer; color: transparent; font-size: 0;
+  background: var(--surface-2); border: 1px solid var(--border); border-left: 0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.settings-update-picker select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settings-update-picker select:disabled { cursor: default; opacity: 0.5; }
+.settings-update-picker select option { color: var(--ink); background: var(--surface-2); font-size: 13px; }
+.settings-update-picker > :last-child { position: absolute; inset: 0; margin: auto; pointer-events: none; color: var(--ink-2); }
+.settings-update-channel { color: var(--ink-3); font-size: 11px; }
 </style>

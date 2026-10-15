@@ -1,6 +1,6 @@
 [package]
 name = "wonderful-ui"
-version = "0.11.0"
+version = "0.12.0"
 authors = ["WizisCool", "murainy", "WonderfulUI Contributors"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/nightx521/wonderfulUI"
@@ -8,6 +8,11 @@ homepage = "https://github.com/nightx521/wonderfulUI"
 description = "Personal Valorant highlight library for Windows"
 edition = "2021"
 rust-version = "1.88"
+
+[features]
+default = ["updater", "process"]
+updater = ["tauri-plugin-updater"]
+process = ["tauri-plugin-process"]
 
 [lib]
 name = "wonderful_ui_lib"
@@ -38,6 +43,9 @@ qrcode = "0.14"
 rand = "0.8"
 base64 = "0.22"
 rusty-leveldb = "4"
+tauri-plugin-updater = { version = "=2.10.1", optional = true }
+tauri-plugin-process = { version = "=2.3.1", optional = true }
+
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 # Re-encode MediaComposition thumbnails (often JPEG) to PNG for clipboard/save.

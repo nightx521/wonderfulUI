@@ -43,7 +43,7 @@ highlights and a normal empty state. An encrypted empty object is valid empty
 highlight data, not a failure or evidence that recording was disabled.
 
 - The app uses a stable DOM skeleton.
-- `App.vue` builds `.app`, `.topbar`, `.panes`, and the pane containers once after load. State management is driven by 7 Pinia stores (`account`, `filter`, `detail`, `player`, `settings`, `share`, `ui`) and vue-router (`createMemoryHistory`).
+- `App.vue` builds `.app`, `.topbar`, `.panes`, and the pane containers once after load. State management is driven by 8 Pinia stores (`account`, `filter`, `detail`, `player`, `settings`, `share`, `ui`, `update`) and vue-router (`createMemoryHistory`).
 - State changes are driven by reactive Pinia stores, not manual DOM helpers.
 - Do not reintroduce `root.innerHTML = ''` or whole-`#app` rebuilds for ordinary interactions.
 - If a scrollable subtree must be rebuilt, preserve that subtree's `scrollTop`.
@@ -806,3 +806,12 @@ display names.
 
 When new weapon codes appear in ACLOS data, add them to `WEAPON_CN` —
 do not write ad-hoc label logic in the player or modal code.
+
+## Update transport choice
+
+The About update button has a native select at its right edge for Proxy (default)
+and GitHub direct. Show the active route below it and persist the enum with
+best-effort storage. A route change invalidates in-flight checks and stale
+metadata; late results and errors cannot overwrite the current route. Lock the
+choice while downloading/installing. The project-updater adapter returns the
+official SDK Update resource from the backend, retaining signature validation.

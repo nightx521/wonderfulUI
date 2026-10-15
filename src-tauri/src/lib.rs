@@ -5,6 +5,8 @@ mod lan_ip;
 mod library;
 mod os_shell;
 mod parser;
+#[cfg(feature = "updater")]
+mod project_updater;
 mod share_policy;
 mod share_server;
 
@@ -57,7 +59,15 @@ pub fn run() {
             share_server_status,
             log_event,
             capture_video_frame,
+            #[cfg(feature = "updater")]
+            project_updater::check_project_update,
         ]);
+
+    #[cfg(feature = "updater")]
+    let app = app.plugin(tauri_plugin_updater::Builder::new().build());
+
+    #[cfg(feature = "process")]
+    let app = app.plugin(tauri_plugin_process::init());
 
     // Screenshot save: native Save As + write user-chosen path.
     let app = app

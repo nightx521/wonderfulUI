@@ -74,13 +74,21 @@ const cliTest = readFileSync(join(ROOT, 'packages', 'parser', 'tests', 'cli.test
 const testVer = cliTest.match(/expect\(r\.stdout\.trim\(\)\)\.toBe\('([\d.]+)'\)/)?.[1] ?? '';
 check('packages/parser/tests/cli.test.ts', testVer, expected);
 
-// Private project distribution uses manual NSIS upgrades.
-console.log('\nDistribution config:');
-if (tauriConf.plugins?.updater || tauriConf.bundle?.createUpdaterArtifacts !== false) {
-  console.error('  FAIL manual distribution must not enable updater configuration/artifacts');
-  errors++;
+// Signed updater distribution for the owned project, using the default acceleration route.
+console.log('\nUpdater config:');
+const official = 'https://github.com/nightx521/wonderfulUI/releases/latest/download/latest.json';
+const proxy = 'https://github.murainy.com/';
+const updater = tauriConf.plugins?.updater;
+if (JSON.stringify(updater?.endpoints) !== JSON.stringify([proxy + official])) {
+  console.error('  FAIL default updater endpoint does not match the owned proxy route'); errors++;
+}
+if (!updater?.pubkey || updater.dangerousInsecureTransportProtocol === true
+  || tauriConf.bundle?.createUpdaterArtifacts !== true || updater.windows?.installMode !== 'passive') {
+  console.error('  FAIL signed updater configuration is incomplete'); errors++;
 } else {
-  console.log('  OK   manual NSIS distribution');
+  const decoded = Buffer.from(updater.pubkey, 'base64').toString('utf8');
+  if (!decoded.includes('minisign public key')) { console.error('  FAIL invalid updater public key'); errors++; }
+  else console.log('  OK   owned updater key and proxy endpoint');
 }
 
 // versions.json current release entry should exist (notes may be empty but warn)

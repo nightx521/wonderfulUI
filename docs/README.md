@@ -23,4 +23,4 @@
 - [架构说明](ARCHITECTURE.md)
 - [ACLOS 数据格式](ACLOS_FORMAT.md)
 - [前端约定](FRONTEND_CONVENTIONS.md)
-- [安装与升级](UPDATER.md)
+- [更新与安装](UPDATER.md)

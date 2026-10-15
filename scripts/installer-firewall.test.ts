@@ -47,8 +47,8 @@ describe('Windows Quick Share firewall installer contract', () => {
     expect(resolve(root, 'src-tauri', nsis.installerHooks)).toBe(
       resolve(root, 'src-tauri/windows/installer-hooks.nsh'),
     );
-    expect(config.plugins.updater).toBeUndefined();
-    expect(config.bundle.createUpdaterArtifacts).toBe(false);
+    expect(config.plugins.updater.windows.installMode).toBe('passive');
+    expect(config.bundle.createUpdaterArtifacts).toBe(true);
 
     expect(template).toContain('RequestExecutionLevel admin');
     expect(template).toContain('${GetOptions} $CMDLINE "/UPDATE" $UpdateMode');

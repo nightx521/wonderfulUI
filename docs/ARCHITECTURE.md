@@ -78,6 +78,7 @@ Rust 在错误仍为类型化值时分类，library view 通过可选 `errorCode
 
 ### 启动和扫描
 
+- `check_project_update(channel)`：按 proxy/github 枚举选择固定项目更新地址，返回官方 updater 资源句柄；
 - `aclos_status`：只读检查默认 WonderfulDb 目录和数字账户文件，用于首次使用页面；
 - `scan_shell`：读取已有 SQLite 账户壳并启动后台源刷新；
 - `scan_all`：启动时的增量刷新并返回 rounds-stripped view；
@@ -121,7 +122,8 @@ Windows reparse points。文件名、大小和路径后缀必须得到唯一候�
   当前 canonical 地图、英雄和模式资源由仓库构建，正常扫描通常不产生 CDN 下载；
 - `start_share_server`/`stop_share_server`/`share_server_status`：见下文快传边界。
 
-当前应用没有遥测、账号同步或后台上传 command。应用内项目链接由外链边界校验后打开。
+当前应用没有遥测、账号同步或后台上传 command。更新通过 Rust updater 读取版本与下载签名安装包，
+不发送资料库内容。应用内项目链接由外链边界校验后打开。
 
 ## 快传架构
 
@@ -143,7 +145,8 @@ Windows NSIS 安装、覆盖安装和安装器 `/UPDATE` 会幂等配置名为
 ## 安装与升级
 
 版本交付为 Windows x64 NSIS 安装器，沿用原目录覆盖升级并保留资料和设置。
-打包时附带 LICENSE 与 NOTICE.md。具体流程见 [安装与升级](UPDATER.md)。
+打包时附带 LICENSE 与 NOTICE.md。默认代理更新，可选 GitHub 直连；
+检查与下载共用选定线路，官方 updater 负责签名校验和安装。具体流程见 [更新与安装](UPDATER.md)。
 
 ## Tauri 安全边界
 
