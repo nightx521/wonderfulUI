@@ -1,6 +1,6 @@
 {
   "$schema": "https://example.com/wonderful-ui/versions.schema.json",
-  "current": "0.13.0",
+  "current": "1.0.0",
   "min_supported": "0.1.0",
   "releases": {
     "v0.1.0": {
@@ -307,6 +307,19 @@
       "date": "2026-10-15",
       "prerelease": true,
       "notes": "## 快传\n- 修复重复快传后端口未释放的问题，关闭二维码时等待服务退出。\n- 下载未完成时，关闭前可选择继续下载或停止下载。\n- 端口冲突时显示占用程序，可确认结束符合条件的程序并重试。\n\n## 界面与文档\n- 简化更新失败提示，保留代理加速与 GitHub 直连选择。\n- 更新玩家与开发者使用说明。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v1.0.0": {
+      "tag": "v1.0.0",
+      "date": "2026-10-15",
+      "prerelease": false,
+      "notes": "WonderfulUI 1.0.0 首个正式版\n\n- 整理和回看无畏契约高光，按账号、来源设备、英雄、地图、模式与成就筛选对局。\n- 支持历史资料导入、视频预览、段位与多杀提示，以及局域网快传。\n- 提供代理加速与 GitHub 直连更新，支持覆盖升级并保留已有资料与设置。\n\n由 murainy 二次开发，保留原作者 WizisCool 版权，遵循 GPL-3.0-or-later。",
       "min_supported_version": "0.1.0",
       "assets": {
         "windows-x86_64": {
