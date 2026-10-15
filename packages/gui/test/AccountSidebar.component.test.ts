@@ -61,7 +61,11 @@ describe('AccountSidebar rename lifecycle', () => {
     wrapper.unmount();
   });
 
-  test('renders a recoverable generic row for an account parse failure', () => {
+  test.each([
+    [undefined, '账户读取失败'],
+    ['file_busy', '文件可能被占用'],
+    ['access_denied', '可能没有文件访问权限'],
+  ])('renders a safe cause for an account failure (%s)', (errorCode, expectedTip) => {
     const wrapper = mount(AccountSidebar, {
       attachTo: document.body,
       global: {
@@ -76,6 +80,7 @@ describe('AccountSidebar rename lifecycle', () => {
                   path: 'D:\\WonderfulDb\\broken-openid',
                   matchCount: 0,
                   error: 'parse D:\\private\\broken-openid: invalid payload',
+                  errorCode,
                 }],
                 matches: [],
                 selectedAccountId: 'broken-openid',
@@ -91,8 +96,26 @@ describe('AccountSidebar rename lifecycle', () => {
 
     const row = wrapper.get('.account.is-error');
     expect(row.text()).toContain('!');
-    expect(row.attributes('data-tip')).toContain('全量扫描重试');
+    expect(row.attributes('data-tip')).toContain(expectedTip);
     expect(row.attributes('data-tip')).not.toContain('D:\\private');
+    wrapper.unmount();
+  });
+
+  test('keeps a named empty account visible with zero highlights', () => {
+    const wrapper = mount(AccountSidebar, {
+      global: {
+        plugins: [createTestingPinia({ createSpy: vi.fn, stubActions: false,
+          initialState: { account: {
+            accounts: [{ openid: 'empty', path: '', matchCount: 0, nick: '示例账户' }],
+            matches: [], selectedAccountId: 'empty', accountLabels: new Map([['empty', '示例账户']]),
+          } },
+        })],
+      },
+    });
+    const row = wrapper.get('.account[role="option"]');
+    expect(row.get('.account-count').text()).toBe('0');
+    expect(row.attributes('data-tip')).toContain('暂无本机高光');
+    expect(row.classes()).not.toContain('is-error');
     wrapper.unmount();
   });
 

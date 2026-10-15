@@ -48,6 +48,9 @@ for (const mode of VALORANT_GAME_MODES) {
   GAME_MODE_BY_KEY.set(normalizeText(mode.en), mode);
   GAME_MODE_BY_KEY.set(normalizeText(mode.cn), mode);
   GAME_MODE_BY_KEY.set(modePathKey(mode.assetPath), mode);
+  // ACLOS also uses the GameModes folder name as its short mode token.
+  const folder = mode.assetPath.replace(/\\/g, '/').split('/').at(-2);
+  if (folder) GAME_MODE_BY_KEY.set(normalizeText(folder), mode);
 }
 
 // ─── Pure lookups ──────────────────────────────────────────────────────────
@@ -166,6 +169,7 @@ export function resolveMatchMapLabel(match: MatchRecord): string {
 
 /** Known agent registry → unknown career label → raw agent name. */
 export function resolveMatchAgentLabel(match: MatchRecord): string {
+  if (normalizeAgentName(match.agent?.agent_name ?? '') === 'abilitydraftagent') return '轮战机器人';
   const canonical = matchAgentAsset(match);
   if (canonical) return canonical.cn;
   return stringValue(match.career?.hero_name) ?? match.agent?.agent_name ?? '';
@@ -181,6 +185,14 @@ export function resolveMatchHeroImage(match: MatchRecord): string | undefined {
 
 export function resolveMatchModeIcon(match: MatchRecord): string | undefined {
   return resolveMatchAssetUrl(match, 'game_mode_icon');
+}
+
+/** ACLOS display label, with canonical metadata when career data is absent. */
+export function resolveMatchModeLabel(match: MatchRecord): string {
+  const label = stringValue(match.career?.game_mode);
+  const canonical = lookupGameModeAsset(match);
+  if (canonical && (!label || label === canonical.en)) return canonical.cn;
+  return label ?? canonical?.cn ?? '';
 }
 
 /**

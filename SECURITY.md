@@ -24,8 +24,7 @@
   ACLOS、游戏、Riot、WeGame 或 Vanguard 文件。
 - 播放、定位、截图和快传只接受资料库中已经登记并经后端校验的本地视频路径。
 - 当前代码没有遥测、账号同步或后台上传。索引、账户偏好和诊断日志保存在本机。
-- 正式版通过 HTTPS 请求 GitHub Releases 的 `latest.json` 检查更新，安装包使用签名
-  校验。
+- 升级通过用户运行项目的 NSIS 安装器完成；下载时应核对项目来源与对应版本校验值。
 - 快传仅在用户主动开启时监听 `22357/TCP`，并使用随机令牌、Host 校验和本地子网
   防火墙规则。
 
@@ -37,4 +36,4 @@
 - 带有个人目录、NAS 地址、快传 URL 或令牌的截图和测试数据。
 
 实现细节见 [架构说明](docs/ARCHITECTURE.md)、[ACLOS 数据格式](docs/ACLOS_FORMAT.md) 和
-[自更新系统](docs/UPDATER.md)。
+[安装与升级](docs/UPDATER.md)。

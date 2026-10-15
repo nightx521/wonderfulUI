@@ -264,6 +264,7 @@ import { usePlayerStore } from '../../stores/player.ts';
 import { useUiStore } from '../../stores/ui.ts';
 import { invoke, convertFileSrc } from '../../tauri-adapter.ts';
 import { clampSeekMsForDuration } from '../../utils/event-time.ts';
+import { createScrubSeek } from '../../utils/scrub-seek.ts';
 import { placeMenuNearCursor } from '../../utils/context-menu.ts';
 import {
   broadcastCloseContextMenus,
@@ -387,6 +388,13 @@ const isMuted = ref(false);
 let preMuteVol = 100;
 
 const isDragging = ref(false);
+let scrubSeek: ReturnType<typeof createScrubSeek> | null = null;
+
+function cancelScrubSeek() {
+  scrubSeek?.cancel();
+  scrubSeek = null;
+  isDragging.value = false;
+}
 const lastBufferedPct = ref(0);
 
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -491,6 +499,7 @@ function beginScreenshotJob(): ScreenshotJob | null {
   const videoElement = videoRef.value;
   const path = video?.video_src?.trim();
   if (!video || !videoElement || !path || !player.isOpen) return null;
+  cancelScrubSeek();
   screenshotBusy = true;
   return {
     generation: ++screenshotJobGeneration,
@@ -1079,6 +1088,7 @@ function resetPlaybackSession(video: VideoItem | null): void {
   const canReuseLoadedMedia = !!nextPath && nextPath === activePlaybackPath;
   activePlaybackPath = nextPath;
   invalidateScreenshotJob();
+  cancelScrubSeek();
   stopFrameHold();
   clearHideTimer();
   clearBufferingTimer();
@@ -1211,6 +1221,7 @@ function showControls() {
 
 function scheduleHide() {
   clearHideTimer();
+  if (isDragging.value) return;
   if (state.value !== 'playing' && state.value !== 'buffering') return;
   hideTimer = setTimeout(() => {
     const ctrl = controlsRef.value?.$el as HTMLElement | undefined;
@@ -1411,17 +1422,34 @@ function onFrameStepPointerDown(delta: number, e: PointerEvent) {
 
 function onControlsSeek(pct: number) {
   const v = videoRef.value;
-  if (!v || !v.duration) return;
-  const t = pct * v.duration;
-  v.currentTime = t;
+  if (!v || !Number.isFinite(v.duration) || v.duration <= 0 || !Number.isFinite(pct)
+    || screenshotHold || screenshotUi.value || freezeFrameActive.value) return;
+  if (!isDragging.value) stopFrameHold();
+  const t = Math.max(0, Math.min(1, pct)) * v.duration;
+  currentTime.value = t;
+  if (isDragging.value && scrubSeek) scrubSeek.request(t);
+  else {
+    try { v.currentTime = t; } catch { currentTime.value = v.currentTime || 0; }
+  }
 }
 
 function onSeekStart() {
+  cancelScrubSeek();
+  const v = videoRef.value;
+  if (!v || screenshotHold || screenshotUi.value || freezeFrameActive.value) return;
+  stopFrameHold();
+  clearBufferingTimer();
+  bufferingMode.value = 'hidden';
+  scrubSeek = createScrubSeek(v);
   isDragging.value = true;
+  showControls();
 }
 
 function onSeekEnd() {
+  scrubSeek?.finish();
+  scrubSeek = null;
   isDragging.value = false;
+  scheduleHide();
 }
 
 let fpsMeasureGeneration = 0;
@@ -1516,6 +1544,7 @@ function onPause() {
 }
 
 function onWaiting() {
+  if (isDragging.value) return;
   if (state.value !== 'playing') return;
   stateBeforeSeek = state.value;
   clearBufferingTimer();
@@ -1529,7 +1558,7 @@ function onSeeking() {
   if (state.value === 'loading') return;
   // Hold-step owns seeking; do not mark seek windows / dim overlay.
   if (frameHoldActive) return;
-  stateBeforeSeek = state.value;
+  if (state.value !== 'buffering') stateBeforeSeek = state.value;
   lastSeekTime = Date.now();
 }
 
@@ -1541,6 +1570,7 @@ function onEnded() {
 }
 
 function onError() {
+  cancelScrubSeek();
   clearBufferingTimer();
   bufferingMode.value = 'hidden';
   state.value = 'error';
@@ -1737,6 +1767,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  cancelScrubSeek();
   document.removeEventListener('keydown', onKeydown, true);
   offCloseMenus?.();
   offCloseMenus = null;

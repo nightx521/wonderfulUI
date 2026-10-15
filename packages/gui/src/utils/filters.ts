@@ -6,12 +6,15 @@
  */
 import type { MatchRecord } from '@wonderful-ui/parser';
 import { parseAclLocalTime } from './event-state-machine.ts';
+import { resolveMatchResult } from './match-result.ts';
+import { matchAchievementCategory, matchRoomType } from './match-metadata.ts';
 import {
   lookupMapAsset,
   resolveMatchAgentLabel,
   resolveMatchHeroImage,
   resolveMatchMapImage,
   resolveMatchMapLabel,
+  resolveMatchModeLabel,
 } from './valorant-assets.ts';
 
 // ─── display-name helpers ─────────────────────────────────
@@ -42,11 +45,11 @@ export function heroImageUrl(m: MatchRecord): string | undefined {
 }
 
 export function modeCn(m: MatchRecord): string {
-  return (m.career?.game_mode as string) || '';
+  return resolveMatchModeLabel(m);
 }
 
 export function fmtScore(m: MatchRecord): string {
-  return `${m.stats.rounds_won}:${m.stats.rounds_lost}`;
+  return resolveMatchResult(m).score;
 }
 
 export function fmtLevel(m: MatchRecord): string {
@@ -151,9 +154,11 @@ export interface FilterState {
   heroes: string[];
   maps: string[];
   modes: string[];
-  results: ('win' | 'loss')[];
-  achievements: ('mvp' | 'svp')[];
+  roomTypes: ('custom' | 'non-custom')[];
+  results: ('win' | 'loss' | 'draw' | 'unknown')[];
+  achievements: ('mvp' | 'svp' | 'other')[];
   videoTypes: string[];
+  sources: string[];
   kills: [number | null, number | null];
   deaths: [number | null, number | null];
   assists: [number | null, number | null];
@@ -177,9 +182,11 @@ export const EMPTY_FILTERS: FilterState = {
   heroes: [],
   maps: [],
   modes: [],
+  roomTypes: [],
   results: [],
   achievements: [],
   videoTypes: [],
+  sources: [],
   kills: emptyRange(),
   deaths: emptyRange(),
   assists: emptyRange(),
@@ -199,7 +206,7 @@ export const EMPTY_FILTERS: FilterState = {
 
 // ─── range helpers ─────────────────────────────────────────
 
-export const CATEGORY_KEYS = ['heroes', 'maps', 'modes', 'results', 'achievements', 'videoTypes'] as const;
+export const CATEGORY_KEYS = ['sources', 'heroes', 'maps', 'modes', 'roomTypes', 'results', 'achievements', 'videoTypes'] as const;
 export const RANGE_KEYS = ['kills', 'deaths', 'assists', 'score', 'kda', 'kd',
   'roundsWon', 'roundsLost', 'matchDuration', 'videoCount',
   'videoDuration', 'videoSize', 'dateRange', 'gameLevel'] as const;
@@ -229,14 +236,13 @@ export const RANGE_GETTERS: Record<RangeKey, (m: MatchRecord) => number> = {
 };
 
 export const CATEGORY_GETTERS: Record<CategoryKey, (m: MatchRecord) => string[]> = {
+  sources: m => m.library_sources?.map(s => s.id) ?? ['local'],
   heroes: m => [agentCn(m), m.agent.agent_name],
   maps: m => [mapCn(m), m.map.map_id],
   modes: m => [modeCn(m), m.mode],
-  results: m => [m.stats.has_won ? 'win' : 'loss'],
-  achievements: m => {
-    const t = (m as unknown as Record<string, unknown>)._achvType as string | undefined;
-    return t ? [t] : [];
-  },
+  roomTypes: m => [matchRoomType(m)],
+  results: m => [resolveMatchResult(m).outcome],
+  achievements: m => [matchAchievementCategory(m)],
   videoTypes: m => m.videos.map(v => v.video_type),
 };
 
@@ -309,7 +315,11 @@ export function activeFilterCount(fs: FilterState): number {
 export function activeFilterSummary(fs: FilterState): string {
   const parts: string[] = [];
   for (const key of CATEGORY_KEYS) {
-    if (fs[key].length) parts.push(...fs[key]);
+    const labels: Record<string, string> | undefined = key === 'results'
+      ? { win: '胜', loss: '负', draw: '平', unknown: '—' }
+      : key === 'achievements' ? { mvp: 'MVP', svp: 'SVP', other: '其他' }
+      : key === 'roomTypes' ? { custom: '自定义', 'non-custom': '非自定义' } : undefined;
+    if (fs[key].length) parts.push(...(key === 'sources' ? fs.sources.map(id => id === 'local' ? '本机' : '导入设备') : fs[key].map(value => labels?.[value] ?? value)));
   }
   for (const key of RANGE_KEYS) {
     const [lo, hi] = fs[key];
@@ -367,16 +377,24 @@ export function sanitizePersistedFilters(value: unknown): FilterState {
       case 'heroes': filters.heroes = values; break;
       case 'maps': filters.maps = values; break;
       case 'modes': filters.modes = values; break;
+      case 'roomTypes':
+        filters.roomTypes = values.filter((item): item is FilterState['roomTypes'][number] =>
+          item === 'custom' || item === 'non-custom'
+        );
+        break;
       case 'videoTypes': filters.videoTypes = values; break;
+      case 'sources': filters.sources = values; break;
       case 'results':
-        filters.results = values.filter((item): item is 'win' | 'loss' =>
-          item === 'win' || item === 'loss'
+        filters.results = values.filter((item): item is FilterState['results'][number] =>
+          item === 'win' || item === 'loss' || item === 'draw' || item === 'unknown'
         );
         break;
       case 'achievements':
-        filters.achievements = values.filter((item): item is 'mvp' | 'svp' =>
-          item === 'mvp' || item === 'svp'
-        );
+        filters.achievements = [...new Set(values.map(item =>
+          item === 'normal' || item === 'unknown' ? 'other' : item
+        ).filter((item): item is FilterState['achievements'][number] =>
+          item === 'mvp' || item === 'svp' || item === 'other'
+        ))];
         break;
     }
   }

@@ -5,7 +5,7 @@ use rusqlite::{Connection, Result};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub const CURRENT_SCHEMA_VERSION: i64 = 7;
 const LIBRARY_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn library_dir() -> std::result::Result<PathBuf, String> {
@@ -48,6 +48,27 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS history_devices (
+            id TEXT PRIMARY KEY, label TEXT NOT NULL, source_bytes INTEGER NOT NULL,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS history_accounts (
+            device_id TEXT NOT NULL REFERENCES history_devices(id), openid TEXT NOT NULL,
+            raw_json TEXT NOT NULL, PRIMARY KEY(device_id,openid)
+        );
+        CREATE TABLE IF NOT EXISTS history_matches (
+            device_id TEXT NOT NULL REFERENCES history_devices(id), openid TEXT NOT NULL,
+            match_id TEXT NOT NULL, raw_json TEXT NOT NULL,
+            PRIMARY KEY(device_id,openid,match_id)
+        );
+        CREATE TABLE IF NOT EXISTS history_videos (
+            device_id TEXT NOT NULL REFERENCES history_devices(id), openid TEXT NOT NULL,
+            match_id TEXT NOT NULL, path TEXT NOT NULL,
+            PRIMARY KEY(device_id,openid,match_id,path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_history_match_account ON history_matches(openid,match_id);
+        CREATE INDEX IF NOT EXISTS idx_history_video_path ON history_videos(path);
 
         CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
@@ -198,6 +219,15 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "accounts", "parse_error")? {
         conn.execute("ALTER TABLE accounts ADD COLUMN parse_error TEXT", [])?;
     }
+    if !column_exists(conn, "accounts", "parse_error_code")? {
+        conn.execute("ALTER TABLE accounts ADD COLUMN parse_error_code TEXT", [])?;
+    }
+    if !column_exists(conn, "accounts", "match_details_json")? {
+        conn.execute(
+            "ALTER TABLE accounts ADD COLUMN match_details_json TEXT",
+            [],
+        )?;
+    }
     if !column_exists(conn, "accounts", "source_size_bytes")? {
         conn.execute(
             "ALTER TABLE accounts ADD COLUMN source_size_bytes INTEGER",
@@ -261,29 +291,32 @@ pub fn load_library_view(conn: &Connection, dir: impl Into<String>) -> Result<Li
          WHERE openid = ?1
          ORDER BY matches_id",
     )?;
-    // Hide empty WonderfulDb shells (0 highlight matches) — they are openid
-    // noise. Still show accounts with parse_error so users can see failures.
+    // Keep named empty accounts and failures; hide anonymous empty shells.
     let mut accounts_stmt = conn.prepare(
         "SELECT
             a.openid,
-            a.source_path,
+            COALESCE(a.source_path, ''),
             COUNT(m.id) AS match_count,
             a.nick,
             a.tag,
             a.parse_error,
-            p.custom_name
+            p.custom_name,
+            a.parse_error_code,
+            a.match_details_json
          FROM accounts a
          LEFT JOIN matches m ON m.openid = a.openid
          LEFT JOIN account_preferences p ON p.openid = a.openid
-         GROUP BY a.openid, a.source_path, a.nick, a.tag, a.parse_error, p.custom_name, p.sort_order
+         GROUP BY a.openid, a.source_path, a.nick, a.tag, a.parse_error, a.parse_error_code, a.match_details_json, p.custom_name, p.sort_order
          HAVING COUNT(m.id) > 0
             OR (a.parse_error IS NOT NULL AND TRIM(a.parse_error) <> '')
+            OR TRIM(COALESCE(a.nick, '')) <> ''
+            OR TRIM(COALESCE(p.custom_name, '')) <> ''
          ORDER BY
             CASE WHEN p.sort_order IS NULL THEN 1 ELSE 0 END,
             p.sort_order,
             a.openid",
     )?;
-    let accounts = accounts_stmt
+    let mut accounts = accounts_stmt
         .query_map([], |row| {
             let openid: String = row.get(0)?;
             let achievements = achievements_stmt
@@ -303,7 +336,12 @@ pub fn load_library_view(conn: &Connection, dir: impl Into<String>) -> Result<Li
                 tag: row.get(4)?,
                 custom_name: row.get(6)?,
                 achievements,
+                match_details: row
+                    .get::<_, Option<String>>(8)?
+                    .and_then(|json| serde_json::from_str(&json).ok())
+                    .unwrap_or_default(),
                 error: row.get(5)?,
+                error_code: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>>>()?;
@@ -337,6 +375,7 @@ pub fn load_library_view(conn: &Connection, dir: impl Into<String>) -> Result<Li
         }
     }
     // Strip rounds once after deserialize (bulk list must stay rounds-free for IPC size).
+    let corrupt_history = super::history::merge_view(conn, &mut accounts, &mut matches)?;
     strip_match_rounds(&mut matches);
     let account_errors: i64 = conn.query_row(
         "SELECT COUNT(*) FROM accounts WHERE parse_error IS NOT NULL AND parse_error <> ''",
@@ -348,7 +387,7 @@ pub fn load_library_view(conn: &Connection, dir: impl Into<String>) -> Result<Li
         dir: dir.into(),
         accounts,
         matches,
-        total_errors: (account_errors + corrupt_matches) as usize,
+        total_errors: (account_errors + corrupt_matches) as usize + corrupt_history,
     })
 }
 
@@ -410,20 +449,7 @@ pub fn load_match_rounds(
     openid: &str,
     match_id: &str,
 ) -> std::result::Result<MatchRecord, String> {
-    let raw: String = conn
-        .query_row(
-            "SELECT raw_json FROM matches WHERE openid = ?1 AND id = ?2",
-            [openid, match_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| {
-            format!(
-                "match {} not found in library for {}: {}",
-                match_id, openid, e
-            )
-        })?;
-    serde_json::from_str::<MatchRecord>(&raw)
-        .map_err(|e| format!("decode match {} from library: {}", match_id, e))
+    super::history::load_match(conn, openid, match_id)
 }
 
 /// IPC commands that open, decode, or share a local file must only accept
@@ -432,7 +458,8 @@ pub fn load_match_rounds(
 /// file execution or exfiltration.
 pub fn is_library_video_path(conn: &Connection, path: &str) -> Result<bool> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM videos WHERE path = ?1)",
+        "SELECT ?1 <> '' AND (EXISTS(SELECT 1 FROM videos WHERE path = ?1)
+         OR EXISTS(SELECT 1 FROM history_videos WHERE path = ?1))",
         [path],
         |row| row.get(0),
     )
@@ -440,7 +467,8 @@ pub fn is_library_video_path(conn: &Connection, path: &str) -> Result<bool> {
 
 pub fn is_known_account(conn: &Connection, openid: &str) -> Result<bool> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM accounts WHERE openid = ?1)",
+        "SELECT EXISTS(SELECT 1 FROM accounts WHERE openid = ?1)
+         OR EXISTS(SELECT 1 FROM history_accounts WHERE openid = ?1)",
         [openid],
         |row| row.get(0),
     )
@@ -449,6 +477,37 @@ pub fn is_known_account(conn: &Connection, openid: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_retains_legacy_errors_and_named_empty_accounts() {
+        let conn = open_memory_for_test().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute("ALTER TABLE accounts DROP COLUMN parse_error_code", [])
+            .unwrap();
+        conn.execute("ALTER TABLE accounts DROP COLUMN match_details_json", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO accounts(openid, source_id, last_seen_at, nick, parse_error)
+            VALUES('legacy', 'aclos_wonderfuldb', 1, NULL, 'old error'),
+                  ('named', 'aclos_wonderfuldb', 1, 'Fixture', NULL),
+                  ('anonymous', 'aclos_wonderfuldb', 1, NULL, NULL)",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let view = load_library_view(&conn, "fixture").unwrap();
+        assert_eq!(view.accounts.len(), 2);
+        assert_eq!(view.total_errors, 1);
+        let legacy = view.accounts.iter().find(|a| a.openid == "legacy").unwrap();
+        assert_eq!(legacy.error.as_deref(), Some("old error"));
+        assert!(legacy.error_code.is_none());
+        assert!(legacy.match_details.is_empty());
+        assert!(view
+            .accounts
+            .iter()
+            .any(|a| a.openid == "named" && a.error.is_none()));
+    }
 
     #[test]
     fn migrate_creates_schema_version_and_core_tables() {
@@ -570,8 +629,7 @@ mod tests {
             [],
         )
         .expect("accounts inserted");
-        // Empty shells are hidden from the library view — seed one match each
-        // so preferences/order still apply to real highlight accounts.
+        // Seed one match each to exercise account counts as well as preferences.
         for (id, openid) in [("m-a", "a"), ("m-b", "b"), ("m-c", "c")] {
             let raw = format!(
                 r#"{{"openID":"{openid}","matches_id":"{id}","matches_time":1,"videos":[]}}"#

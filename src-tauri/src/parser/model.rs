@@ -5,6 +5,14 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 
+fn deser_null_as_empty_vec<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<Vec<T>>::deserialize(d).map(Option::unwrap_or_default)
+}
+
 fn deser_str_or_num<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     use serde::de;
     struct Visitor;
@@ -166,6 +174,13 @@ pub struct MatchStats {
     pub score: i64,
     #[serde(default, deserialize_with = "deser_bool_or_str")]
     pub has_won: bool,
+    /// Distinguishes a source result from a default inserted for missing data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_known: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_known: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_stats: Option<Vec<String>>,
     #[serde(default)]
     pub mode_name: String,
     #[serde(default, deserialize_with = "deser_i64_or_str")]
@@ -275,7 +290,12 @@ pub struct RoundItem {
     pub round_s_time: i64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub round_clips: Vec<RoundClip>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // ACLOS can write null when a round has no honors, as well as omit the field.
+    #[serde(
+        default,
+        deserialize_with = "deser_null_as_empty_vec",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub round_honors: Vec<RoundHonor>,
 }
 
@@ -348,8 +368,12 @@ pub struct Account {
     /// snapshot file is missing / empty / has no `match`-type records.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub achievements: Vec<SnapshotAchievement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub match_details: Vec<SnapshotMatchDetail>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
 }
 
 /// Match-level achievement: MVP or SVP from `snapshot.ss_achieve_type`.
@@ -366,6 +390,19 @@ pub struct SnapshotAchievement {
     /// Chinese display label, e.g. "MVP" / "SVP" (from `ss_type_str`).
     #[serde(default)]
     pub type_str: String,
+}
+
+/// Optional observed per-match facts; missing fields remain unknown.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotMatchDetail {
+    pub matches_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub achievement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_draw: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_won: Option<bool>,
 }
 
 /// Top-level result of `scan_all`. Mirrors the GUI's `LoadResult` interface.

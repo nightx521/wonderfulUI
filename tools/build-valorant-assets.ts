@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
+import { VALORANT_RANKS } from '../packages/gui/src/utils/generated/valorant-ranks.zh-CN.ts';
 import {
   VALORANT_AGENTS,
   VALORANT_GAME_MODES,
@@ -28,6 +29,7 @@ const sourceRoot = join(repoRoot, 'packages', 'gui', 'assets', 'valorant-source'
 const publicRoot = join(repoRoot, 'packages', 'gui', 'public');
 const outputRoot = join(publicRoot, 'valorant');
 const records: BuildRecord[] = [
+  ...VALORANT_RANKS.map(record => ({ ...record, kind: 'ranks' as const })),
   ...VALORANT_AGENTS.map(record => ({ ...record, kind: 'agents' as const })),
   ...VALORANT_MAPS.map(record => ({ ...record, kind: 'maps' as const })),
   ...VALORANT_GAME_MODES.map(record => ({ ...record, kind: 'gamemodes' as const })),
@@ -73,7 +75,8 @@ async function compileAsset(record: BuildRecord): Promise<number> {
   try {
     await sharp(source, { failOn: 'error', limitInputPixels: 64 * 1024 * 1024 })
       .resize(spec.width, spec.height, {
-        fit: 'cover',
+        fit: record.kind === 'ranks' ? 'contain' : 'cover',
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
         position: 'centre',
       })
       .webp({

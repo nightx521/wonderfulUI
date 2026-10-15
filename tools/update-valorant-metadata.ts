@@ -18,6 +18,7 @@ interface ValorantApiRecord {
   mapUrl?: unknown;
   splash?: unknown;
   assetPath?: unknown;
+  isPlayableCharacter?: unknown;
 }
 
 interface ValorantApiResponse {
@@ -25,12 +26,21 @@ interface ValorantApiResponse {
   data: ValorantApiRecord[];
 }
 
-const AGENTS_EN_URL = 'https://valorant-api.com/v1/agents?language=en-US&isPlayableCharacter=true';
-const AGENTS_ZH_URL = 'https://valorant-api.com/v1/agents?language=zh-CN&isPlayableCharacter=true';
+const AGENTS_EN_URL = 'https://valorant-api.com/v1/agents?language=en-US';
+const AGENTS_ZH_URL = 'https://valorant-api.com/v1/agents?language=zh-CN';
 const MAPS_ZH_URL = 'https://valorant-api.com/v1/maps?language=zh-CN';
 const MODES_EN_URL = 'https://valorant-api.com/v1/gamemodes?language=en-US';
 const MODES_ZH_URL = 'https://valorant-api.com/v1/gamemodes?language=zh-CN';
 const MEDIA_ORIGIN = 'https://media.valorant-api.com';
+// The zh-CN API still returns the English name for Gauntlet: Glitched.
+// Official CN announcement: https://www.bilibili.com/video/BV1gVeP6SE5c/
+const GAME_MODE_CN_OVERRIDES: Readonly<Record<string, string>> = {
+  '106cc7b7-444a-14e5-4ac6-5eadb9864b67': '异变轮战',
+};
+// Descriptive UI label for the aggregate arena; the localized source still says Gauntlet.
+const MAP_CN_OVERRIDES: Readonly<Record<string, string>> = {
+  'dd3a1cd9-41b1-50ea-3bd6-a7bb3c5978bd': '轮战竞技场',
+};
 const MAX_ASSET_BYTES = 16 * 1024 * 1024;
 const DOWNLOAD_CONCURRENCY = 6;
 
@@ -57,15 +67,21 @@ const [agentsEn, agentsZh, mapsZh, modesEn, modesZh] = await Promise.all([
 const agentsZhById = recordsByUuid(agentsZh, 'zh-CN agent');
 const modesZhById = recordsByUuid(modesZh, 'zh-CN game mode');
 
-const agentDownloads = agentsEn.map((record) => {
+// The hybrid robot is marked non-playable by the API, but has its own portrait.
+// Its source displayName duplicates KAY/O; keep its distinct developer identity.
+const agentDownloads = agentsEn.filter(record =>
+  record.isPlayableCharacter === true || record.developerName === 'AbilityDraftAgent',
+).map((record) => {
   const uuid = requiredString(record.uuid, 'agent uuid');
   const localized = agentsZhById.get(uuid);
   if (!localized) throw new Error(`zh-CN agent missing for ${uuid}`);
   return {
     uuid,
-    en: requiredString(record.displayName, `agent ${uuid} displayName`),
+    en: record.developerName === 'AbilityDraftAgent'
+      ? 'AbilityDraftAgent' : requiredString(record.displayName, `agent ${uuid} displayName`),
     developerName: requiredString(record.developerName, `agent ${uuid} developerName`),
-    cn: requiredString(localized.displayName, `agent ${uuid} zh-CN displayName`),
+    cn: record.developerName === 'AbilityDraftAgent'
+      ? '轮战机器人' : requiredString(localized.displayName, `agent ${uuid} zh-CN displayName`),
     sourceImage: canonicalMediaUrl(localized.displayIcon, `agent ${uuid} displayIcon`),
   };
 }).sort((a, b) => a.en.localeCompare(b.en, 'en'));
@@ -75,7 +91,7 @@ const mapDownloads = mapsZh.map((record) => {
   return {
     uuid,
     mapUrl: requiredString(record.mapUrl, `map ${uuid} mapUrl`).replace(/\\/g, '/'),
-    cn: requiredString(record.displayName, `map ${uuid} zh-CN displayName`),
+    cn: MAP_CN_OVERRIDES[uuid] ?? requiredString(record.displayName, `map ${uuid} zh-CN displayName`),
     sourceImage: canonicalMediaUrl(record.splash, `map ${uuid} splash`),
   };
 }).sort((a, b) => a.mapUrl.localeCompare(b.mapUrl, 'en'));
@@ -89,7 +105,8 @@ const modeDownloads = modesEn.flatMap((record) => {
   return [{
     uuid,
     en: requiredString(record.displayName, `game mode ${uuid} displayName`),
-    cn: requiredString(localized.displayName, `game mode ${uuid} zh-CN displayName`),
+    cn: GAME_MODE_CN_OVERRIDES[uuid]
+      ?? requiredString(localized.displayName, `game mode ${uuid} zh-CN displayName`),
     assetPath: requiredString(record.assetPath, `game mode ${uuid} assetPath`).replace(/\\/g, '/'),
     sourceImage,
   }];

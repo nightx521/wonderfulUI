@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
+import { VALORANT_RANKS } from '../packages/gui/src/utils/generated/valorant-ranks.zh-CN.ts';
 import {
   VALORANT_AGENTS,
   VALORANT_GAME_MODES,
@@ -26,6 +27,7 @@ const sourceRoot = join(repoRoot, 'packages', 'gui', 'assets', 'valorant-source'
 const assetRoot = join(repoRoot, 'packages', 'gui', useDist ? 'dist' : 'public');
 const valorantRoot = join(assetRoot, 'valorant');
 const records: AssetRecord[] = [
+  ...VALORANT_RANKS.map(record => ({ ...record, kind: 'ranks' as const })),
   ...VALORANT_AGENTS.map(record => ({ ...record, kind: 'agents' as const })),
   ...VALORANT_MAPS.map(record => ({ ...record, kind: 'maps' as const })),
   ...VALORANT_GAME_MODES.map(record => ({ ...record, kind: 'gamemodes' as const })),
@@ -93,7 +95,10 @@ async function verifySource(
     );
   }
   const expectedRatio = spec.width / spec.height;
-  if (Math.abs((width / height) - expectedRatio) > 0.01) {
+  const validRatio = kind === 'ranks'
+    ? width / height >= 0.5 && width / height <= 2
+    : Math.abs((width / height) - expectedRatio) <= 0.01;
+  if (!validRatio) {
     throw new Error(
       `${relative(repoRoot, path)} has wrong ${kind} aspect ratio ${width}x${height}; `
       + `expected ${spec.width}:${spec.height}`,

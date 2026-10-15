@@ -61,54 +61,36 @@ describe('matchAppShortcut', () => {
 describe('nextCloseableLayer', () => {
   test('prefers higher z-order layers', () => {
     expect(
-      nextCloseableLayer({
-        updateCloseable: true,
-        shareOpen: true,
+      nextCloseableLayer({        shareOpen: true,
         settingsOpen: true,
         playerOpen: true,
         eventOpen: true,
       }),
     ).toBe('share');
+
     expect(
-      nextCloseableLayer({
-        updateCloseable: true,
-        shareOpen: false,
-        settingsOpen: true,
-        playerOpen: true,
-        eventOpen: true,
-      }),
-    ).toBe('update');
-    expect(
-      nextCloseableLayer({
-        updateCloseable: false,
-        shareOpen: false,
+      nextCloseableLayer({        shareOpen: false,
         settingsOpen: true,
         playerOpen: true,
         eventOpen: true,
       }),
     ).toBe('settings');
     expect(
-      nextCloseableLayer({
-        updateCloseable: false,
-        shareOpen: false,
+      nextCloseableLayer({        shareOpen: false,
         settingsOpen: false,
         playerOpen: true,
         eventOpen: true,
       }),
     ).toBe('player');
     expect(
-      nextCloseableLayer({
-        updateCloseable: false,
-        shareOpen: false,
+      nextCloseableLayer({        shareOpen: false,
         settingsOpen: false,
         playerOpen: false,
         eventOpen: true,
       }),
     ).toBe('event');
     expect(
-      nextCloseableLayer({
-        updateCloseable: false,
-        shareOpen: false,
+      nextCloseableLayer({        shareOpen: false,
         settingsOpen: false,
         playerOpen: false,
         eventOpen: false,

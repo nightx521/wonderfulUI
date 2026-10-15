@@ -16,6 +16,7 @@ const used = [
   'file-text',
   'folder-open',
   'crosshair',
+  'robot',
   'skull',
   'hand-heart',
   'trend-up',

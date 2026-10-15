@@ -34,7 +34,9 @@
         decoding="async"
         @error="onHeroError"
       />
-      <div v-else class="hero-placeholder" :style="{ '--hue': heroHue }">{{ agentInitial }}</div>
+      <div v-else class="hero-placeholder" :style="{ '--hue': heroHue }">
+        {{ agentInitial }}
+      </div>
       <div v-if="badge" :class="'cover-badge cover-badge-' + badge.type" :aria-label="badge.ariaLabel" :title="badge.title">
         <WIcon :icon="badge.icon" :size="9" />
         {{ badge.type.toUpperCase() }}
@@ -42,11 +44,15 @@
     </div>
     <div class="match-meta">
       <div class="match-line match-line-1">
-        <span class="match-agent">{{ agentName }}</span>
+        <span class="match-heading">
+          <span class="match-agent">{{ agentName }}</span>
+          <RankBadge v-if="rank" :rank="rank" />
+        </span>
         <span
           class="match-result-pill"
           :class="resultClass"
           :aria-label="resultAriaLabel"
+          :data-tip="resultAriaLabel"
         >{{ resultText }} {{ matchScore }}</span>
       </div>
       <div class="match-line match-line-2">
@@ -65,7 +71,12 @@
         </span>
       </div>
       <div class="match-line match-line-3">
-        <span class="match-kda">{{ kdaText }}</span>
+        <span class="match-performance">
+          <span class="match-kda" :data-tip="statsHint || undefined">{{ kdaText }}</span>
+          <span v-for="moment in moments" :key="moment.tone" class="match-moment"
+            :class="`moment-${moment.tone}`" :title="moment.description" :data-tip="moment.description"
+            :aria-label="moment.description">{{ moment.label }}</span>
+        </span>
         <span class="match-video-chip">
           <WIcon icon="ph:video" :size="10" />
           × {{ match.videos.length }}
@@ -83,12 +94,17 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import WIcon from '../common/WIcon.vue';
+import RankBadge from './RankBadge.vue';
+import { matchRank, matchMomentBadges } from '../../utils/match-badges.ts';
 import { convertFileSrc } from '../../tauri-adapter.ts';
 import { useAccountStore } from '../../stores/account.ts';
 import { agentCn, mapCn, modeCn, fmtScore } from '../../utils/filters.ts';
 import { matchOptionId } from '../../utils/match-listbox.ts';
 import { resolveMatchAssetSrc } from '../../utils/valorant-assets.ts';
 import type { MatchRecord } from '@wonderful-ui/parser';
+import { resolveMatchResult } from '../../utils/match-result.ts';
+import { matchAchievement } from '../../utils/match-metadata.ts';
+import { statText, statsNote } from '../../utils/match-stats.ts';
 
 const props = defineProps<{
   match: MatchRecord;
@@ -126,14 +142,16 @@ const agentInitial = computed(() => agentName.value[0]?.toUpperCase() ?? '?');
 const mapName = computed(() => mapCn(props.match));
 const modeText = computed(() => modeCn(props.match));
 const matchScore = computed(() => fmtScore(props.match));
-const resultText = computed(() => props.match.stats.has_won ? '胜' : '败');
-const resultClass = computed(() => props.match.stats.has_won ? 'result-win' : 'result-loss');
-const resultAriaLabel = computed(() =>
-  props.match.stats.has_won ? `胜利 ${matchScore.value}` : `失败 ${matchScore.value}`
-);
+const result = computed(() => resolveMatchResult(props.match));
+const resultText = computed(() => result.value.label);
+const resultClass = computed(() => result.value.className);
+const resultAriaLabel = computed(() => result.value.ariaLabel);
 const kdaText = computed(() =>
-  `${props.match.stats.kills}/${props.match.stats.deaths}/${props.match.stats.assists}`
+  ['kills', 'deaths', 'assists'].map(key => statText(props.match, key as 'kills')).join('/')
 );
+const statsHint = computed(() => statsNote(props.match));
+const rank = computed(() => matchRank(props.match));
+const moments = computed(() => matchMomentBadges(props.match));
 
 const timeText = computed(() => {
   const d = new Date(props.match.matches_time);
@@ -158,24 +176,23 @@ const modeIconSrc = computed(() =>
 );
 
 const badge = computed(() => {
-  const achv = account.matchAchievements.get(props.match.matches_id);
-  if (!achv) return null;
-  const isMvp = achv.type === 'mvp';
+  const type = matchAchievement(props.match);
+  if (type !== 'mvp' && type !== 'svp') return null;
+  const isMvp = type === 'mvp';
   return {
-    type: achv.type,
+    type,
     ariaLabel: isMvp ? '本局获得 MVP' : '本局获得 SVP',
-    title: achv.typeStr,
+    title: isMvp ? '本局获得 MVP' : '本局获得 SVP',
     icon: isMvp ? 'ph:crown' : 'ph:medal',
   };
 });
 
 const tooltipText = computed(() =>
-  `${agentName.value}  ·  ${matchScore.value}  ·  ${mapName.value}\n${props.accountLabel}\n${timeText.value}\n${props.match.matches_id}`
+  `${agentName.value}  ·  ${resultAriaLabel.value}  ·  ${mapName.value}\n${props.accountLabel}\n${timeText.value}\n${props.match.matches_id}${rank.value ? `\n${rank.value.description}` : ''}${moments.value.length ? `\n${moments.value.map(moment => moment.description).join('、')}` : ''}`
 );
 
 const rowAriaLabel = computed(() => {
-  const outcome = props.match.stats.has_won ? '胜利' : '失败';
-  return `${agentName.value} · ${mapName.value} · ${outcome} ${matchScore.value} · ${props.accountLabel} · ${timeText.value}`;
+  return `${agentName.value} · ${mapName.value} · ${resultAriaLabel.value} · ${props.accountLabel} · ${timeText.value}${rank.value ? ` · ${rank.value.description}` : ''}${moments.value.length ? ` · ${moments.value.map(moment => moment.description).join('、')}` : ''}`;
 });
 
 function onMapBgError() { mapBgFailed.value = true; }
@@ -308,6 +325,14 @@ function onModeIconError() { modeIconFailed.value = true; }
   gap: 8px;
 }
 .match-line-1 { font-size: 13px; }
+.match-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.match-heading .match-agent { flex-shrink: 0; }
+.match-result-pill { flex-shrink: 0; }
+.match-performance { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.match-moment { flex-shrink: 0; padding: 1px 5px; border-radius: 4px;
+  font-size: 10px; font-weight: var(--w-semibold); line-height: 16px; white-space: nowrap; }
+.moment-four { background: oklch(0.31 0.09 285); color: oklch(0.88 0.08 285); }
+.moment-five { background: oklch(0.82 0.13 85); color: oklch(0.22 0.045 60); }
 .match-line-2 { font-size: 12px; color: var(--ink-3); }
 .match-line-3 { font-size: 12px; color: var(--ink-2); }
 .match-footer {

@@ -10,7 +10,7 @@ export type AppShortcutAction =
   | 'focus-search'
   | 'refresh-library';
 
-export type CloseableLayer = 'share' | 'update' | 'settings' | 'player' | 'event';
+export type CloseableLayer = 'share' | 'settings' | 'player' | 'event';
 
 export interface ShortcutKeyEvent {
   key: string;
@@ -43,14 +43,12 @@ export function matchAppShortcut(e: ShortcutKeyEvent): AppShortcutAction | null 
  * Returns null when nothing UI-level is open → caller may close the window.
  */
 export function nextCloseableLayer(flags: {
-  updateCloseable: boolean;
   shareOpen: boolean;
   settingsOpen: boolean;
   playerOpen: boolean;
   eventOpen: boolean;
 }): CloseableLayer | null {
   if (flags.shareOpen) return 'share';
-  if (flags.updateCloseable) return 'update';
   if (flags.settingsOpen) return 'settings';
   if (flags.playerOpen) return 'player';
   if (flags.eventOpen) return 'event';
@@ -59,7 +57,6 @@ export function nextCloseableLayer(flags: {
 
 /** CSS selectors for the same close controls the user clicks (animation-preserving). */
 export const CLOSE_BUTTON_SELECTOR: Record<CloseableLayer, string> = {
-  update: 'button.update-modal-close',
   share: 'button.share-modal-close',
   settings: 'button.settings-close',
   player: 'button.player-close-top',

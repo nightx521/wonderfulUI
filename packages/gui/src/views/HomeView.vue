@@ -63,8 +63,9 @@
       </template>
       <template v-else-if="accountMatches.length === 0">
         <div class="empty" :class="{ error: !!selectedAccountError }" :role="selectedAccountError ? 'alert' : undefined">
-          <div class="empty-title">{{ selectedAccountError ? '账户读取失败' : '还没有高光' }}</div>
-          <div v-if="selectedAccountError" class="empty-sub error-message">请执行全量扫描重试，详细原因已写入本地日志。</div>
+          <div class="empty-title">{{ selectedAccountError?.title ?? (account.selectedAccountId && account.selectedAccountId !== '__all__' ? '暂无本机高光' : '还没有高光') }}</div>
+          <div v-if="selectedAccountError" class="empty-sub error-message">{{ selectedAccountError.cause }}<br>{{ selectedAccountError.action }}</div>
+          <div v-else class="empty-sub">已读取的高光记录为空，生成高光后刷新资料库。</div>
           <button v-if="selectedAccountError" class="btn btn-primary" type="button" @click="onRecoveryScan">全量扫描重试</button>
         </div>
       </template>
@@ -162,6 +163,7 @@ import {
   type ScanMode,
 } from '../utils/scan-feedback.ts';
 import type { MatchRecord } from '@wonderful-ui/parser';
+import { accountReadFeedback } from '../utils/account-status.ts';
 
 const router = useRouter();
 const account = useAccountStore();
@@ -182,7 +184,7 @@ const filteredMatches = computed(() => filter.applyToMatches(accountMatches.valu
 const selectedAccountError = computed(() => {
   const openid = account.selectedAccountId;
   if (!openid || openid === '__all__') return null;
-  return account.accounts.find(item => item.openid === openid)?.error?.trim() || null;
+  return accountReadFeedback(account.accounts.find(item => item.openid === openid));
 });
 
 // Spinner for the user-driven refresh path (the Refresh button calls

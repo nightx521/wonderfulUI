@@ -93,8 +93,8 @@ if (existsSync(versionTsPath)) {
 }
 
 // 9. update versions.json if it exists (moved from step 8)
-// notes: prefer WUI_RELEASE_NOTES env so release notes land in latest.json.
-// assets.url/signature are unused at runtime (CI writes latest.json); kept
+// notes: prefer WUI_RELEASE_NOTES env so release notes describe the shipped version.
+// assets.url/signature are historical metadata fields; kept
 // empty for backward-compatible schema only.
 const versionsJsonPath = join(ROOT, 'versions.json');
 if (existsSync(versionsJsonPath)) {
@@ -114,7 +114,7 @@ if (existsSync(versionsJsonPath)) {
   if (!notesFromEnv) {
     console.log(
       '  WARN versions.json notes empty. Set WUI_RELEASE_NOTES before bump, ' +
-        'or edit versions.json before push so in-app updater shows real notes.',
+        'or edit versions.json before push so the release has useful notes.',
     );
   }
 }

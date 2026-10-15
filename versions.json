@@ -1,6 +1,6 @@
 {
   "$schema": "https://example.com/wonderful-ui/versions.schema.json",
-  "current": "0.2.1",
+  "current": "0.11.0",
   "min_supported": "0.1.0",
   "releases": {
     "v0.1.0": {
@@ -144,6 +144,149 @@
         "windows-x86_64": {
           "url": "",
           "signature": ""
+        }
+      }
+    },
+    "v0.3.0": {
+      "tag": "v0.3.0",
+      "date": "2026-10-06",
+      "notes": "新增三杀、四杀、五杀时刻筛选；支持异变轮战模式名称与图标；修复安装状态中文乱码及回合荣誉空值导致的账户扫描失败。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v0.3.1": {
+      "tag": "v0.3.1",
+      "date": "2026-10-08",
+      "notes": "修复 Windows 安装后快传防火墙规则未创建的问题，安装器复用应用现有的防火墙助手。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v0.4.0": {
+      "tag": "v0.4.0",
+      "date": "2026-10-08",
+      "notes": "新增旧电脑历史资料导入：选择 WonderfulDb 和当前视频目录，预览后导入；按本机或导入设备筛选，重复对局合并并保留历史记录。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v0.4.1": {
+      "tag": "v0.4.1",
+      "date": "2026-10-09",
+      "notes": "修复合法空高光数据误报账户读取失败；保留有名称的空账户，常见读取错误提供可能原因与处理提示，并补齐账户详细错误日志。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v0.5.0": {
+      "tag": "v0.5.0",
+      "date": "2026-10-10",
+      "notes": "新增 MVP、SVP、普通及缺失成就筛选；统一平局与缺失结果显示，修正异变轮战角色和地图名称；安装器默认覆盖升级并保留资料和设置。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v0.6.0": {
+      "tag": "v0.6.0",
+      "date": "2026-10-10",
+      "notes": "新增高光事件中的玩家昵称及#编号搜索；异变轮战使用本地机器人图标，修正缺少可靠结算时的结果显示，并区分缺失统计与真实零值。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v0.6.1": {
+      "tag": "v0.6.1",
+      "date": "2026-10-10",
+      "notes": "补充玩家搜索结果仅供参考、名单可能不完整的说明；修复异变轮战机器人头像，使用本地打包的真实角色图片。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v0.7.0": {
+      "tag": "v0.7.0",
+      "date": "2026-10-10",
+      "notes": "新增独立玩家筛选，支持昵称与编号的模糊或精确匹配，显示命中姓名及对局数量；列表和详情标明匹配玩家，保留名单可能不完整的说明。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v0.8.0": {
+      "tag": "v0.8.0",
+      "date": "2026-10-13",
+      "notes": "优化视频进度条：拖动时即时显示进度与时间，增强滑块反馈，合并解码定位请求并修复拖拽中断；移除覆盖不足的玩家筛选。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v0.9.0": {
+      "tag": "v0.9.0",
+      "date": "2026-10-15",
+      "notes": "竞技对局显示赛前/赛后段位名称及本地图标，区分未定级与未知；四杀和五杀时刻分别以蓝紫色、金色标签展示，可同时出现。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v0.10.0": {
+      "tag": "v0.10.0",
+      "date": "2026-10-15",
+      "notes": "新增房间类型筛选，可选择全部、自定义或非自定义并与模式等条件叠加；成就筛选统一为 MVP、SVP、其他，兼容原有筛选偏好。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v0.11.0": {
+      "tag": "v0.11.0",
+      "date": "2026-10-15",
+      "notes": "项目地址切换为 murainy 维护的私密仓库；关于页保留原作者版权并新增二次开发署名，安装包附带许可证与来源说明；版本升级使用保留资料的 NSIS 覆盖安装，移除原项目自动更新功能。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": ""
         }
       }
     }

@@ -8,6 +8,7 @@ import {
 import { applyFilters, facetValueCounts, pruneUnavailableCategories } from '../src/utils/filter-engine.ts';
 import { endOfSelectedDayForFilter } from '../src/utils/date-picker.ts';
 import { lookupAgentAsset, lookupMapAsset } from '../src/utils/valorant-assets.ts';
+import { matchRoomType, matchAchievement } from '../src/utils/match-metadata.ts';
 import { loadRefreshScanMode, saveRefreshScanMode } from '../src/stores/filter.ts';
 import type { MatchRecord, VideoItem } from '@wonderful-ui/parser';
 
@@ -48,6 +49,60 @@ function mkMatch(overrides: Partial<MatchRecord> = {}): MatchRecord {
 }
 
 const m1 = mkMatch();
+
+describe('room and achievement categories', () => {
+  test('room type follows the explicit mode token and treats all other records as non-custom', () => {
+    const custom = mkMatch({ mode: ' CustomGame ', career: { game_mode: '团队乱斗' } });
+    const normal = mkMatch({ mode: 'hurm', career: { game_mode: '团队乱斗' } });
+    const range = mkMatch({ mode: 'shootingrange', stats: { ...m1.stats, mode_name: '/Game/GameModes/ShootingRange/CustomGame' } });
+    const missing = mkMatch({ mode: '' });
+    expect([custom, normal, range, missing].map(matchRoomType)).toEqual(['custom', 'non-custom', 'non-custom', 'non-custom']);
+    expect(applyFilters([custom, normal, range, missing], { ...EMPTY_FILTERS, roomTypes: ['custom'] })).toEqual([custom]);
+    expect(applyFilters([custom, normal, range, missing], { ...EMPTY_FILTERS, roomTypes: ['non-custom'] })).toEqual([normal, range, missing]);
+    expect(applyFilters([custom, normal, range], { ...EMPTY_FILTERS, modes: ['团队乱斗'], roomTypes: ['custom'] })).toEqual([custom]);
+  });
+  test('combined room, source and achievement filters share correct facet counts and preserve facts', () => {
+    const custom = mkMatch({ mode: 'customgame', library_metadata: { achievement: 'normal' }, library_sources: [{ id: 'import:fixture', label: '导入设备' }] });
+    const unknown = mkMatch({ mode: 'customgame' });
+    const award = mkMatch({ mode: 'hurm', library_metadata: { achievement: 'svp' } });
+    const records = [custom, unknown, award];
+    expect(facetValueCounts(records, EMPTY_FILTERS, 'achievements')).toEqual(new Map([['other', 2], ['svp', 1]]));
+    expect(facetValueCounts(records, { ...EMPTY_FILTERS, roomTypes: ['custom'], query: 'no-match' }, 'roomTypes')).toEqual(new Map([['custom', 2], ['non-custom', 1]]));
+    expect(facetValueCounts(records, { ...EMPTY_FILTERS, roomTypes: ['custom'] }, 'achievements')).toEqual(new Map([['other', 2]]));
+    expect(applyFilters(records, { ...EMPTY_FILTERS, roomTypes: ['custom'], achievements: ['other'], sources: ['import:fixture'] })).toEqual([custom]);
+    expect([custom, unknown, award].map(matchAchievement)).toEqual(['normal', 'unknown', 'svp']);
+  });
+  test('saved legacy achievements migrate to other once and room selections round-trip', () => {
+    const state = sanitizePersistedFilters({ achievements: ['normal', 'unknown', 'other', 'mvp', 'svp', 'bad'], roomTypes: ['custom', 'custom', 'all', false], heroes: ['捷风'] });
+    expect(state.achievements).toEqual(['other', 'mvp', 'svp']);
+    expect(state.roomTypes).toEqual(['custom']);
+    expect(state.heroes).toEqual(['捷风']);
+    expect(sanitizePersistedFilters(JSON.parse(JSON.stringify(state)))).toEqual(state);
+    expect(sanitizePersistedFilters({ achievements: ['unknown'] }).achievements).toEqual(['other']);
+    expect(sanitizePersistedFilters({ achievements: ['normal'] }).achievements).toEqual(['other']);
+    expect(sanitizePersistedFilters({}).roomTypes).toEqual([]);
+    expect(pruneUnavailableCategories([mkMatch()], state).roomTypes).toEqual([]);
+    expect(activeFilterCount({ ...EMPTY_FILTERS, roomTypes: ['custom'], achievements: ['other'] })).toBe(2);
+  });
+});
+
+describe('source device filters', () => {
+  test('merged matches count once in each source and combine with other filters', () => {
+    const local = mkMatch({ matches_id: 'local' });
+    const imported = mkMatch({ matches_id: 'imported', library_sources: [{ id: 'import:one', label: '旧电脑' }] });
+    const both = mkMatch({ matches_id: 'both', library_sources: [{ id: 'local', label: '本机' }, { id: 'import:one', label: '旧电脑' }] });
+    const matches = [local, imported, both];
+    expect(applyFilters(matches, { ...EMPTY_FILTERS, sources: ['local'] }).map(m => m.matches_id)).toEqual(['local', 'both']);
+    expect(applyFilters(matches, { ...EMPTY_FILTERS, sources: ['import:one'] }).map(m => m.matches_id)).toEqual(['imported', 'both']);
+    expect(applyFilters(matches, { ...EMPTY_FILTERS, sources: ['local', 'import:one'] })).toHaveLength(3);
+    expect(applyFilters(matches, { ...EMPTY_FILTERS, sources: ['import:one'], results: ['loss'] })).toHaveLength(0);
+    expect(facetValueCounts(matches, EMPTY_FILTERS, 'sources')).toEqual(new Map([['local', 2], ['import:one', 2]]));
+  });
+  test('old filter preferences upgrade and source ids persist safely', () => {
+    expect(sanitizePersistedFilters({ heroes: ['捷风'] }).sources).toEqual([]);
+    expect(sanitizePersistedFilters({ sources: ['local', 'import:one', 'local', null] }).sources).toEqual(['local', 'import:one']);
+  });
+});
 const m2 = mkMatch({
   matches_id: 'm2',
   agent: { agent_id: 'a2', agent_name: 'Sage' },
@@ -147,6 +202,35 @@ describe('categorical filter', () => {
 });
 
 describe('dynamic facets', () => {
+  test('counts every moment type once per match, not just the first montage', () => {
+    const first = mkMatch({
+      videos: [mkVideo(), mkVideo({ video_type: '三杀时刻' }),
+        mkVideo({ video_type: '三杀时刻' }), mkVideo({ video_type: '五杀时刻' })],
+    });
+    const second = mkMatch({ matches_id: 'm2',
+      videos: [mkVideo(), mkVideo({ video_type: '四杀时刻' })],
+    });
+    const matches = [first, second];
+    const counts = facetValueCounts(matches, EMPTY_FILTERS, 'videoTypes');
+    expect(counts.get('击杀集锦')).toBe(2);
+    for (const type of ['三杀时刻', '四杀时刻', '五杀时刻']) {
+      expect(counts.get(type)).toBe(1);
+      const selected = { ...EMPTY_FILTERS, videoTypes: [type] };
+      expect(pruneUnavailableCategories(matches, selected).videoTypes).toEqual([type]);
+    }
+    expect(applyFilters(matches, { ...EMPTY_FILTERS, videoTypes: ['三杀时刻', '四杀时刻'] })).toEqual(matches);
+    expect(applyFilters(matches, { ...EMPTY_FILTERS, videoTypes: ['五杀时刻'] })).toEqual([first]);
+    expect(facetValueCounts(matches, { ...EMPTY_FILTERS, videoTypes: ['五杀时刻'] }, 'videoTypes')).toEqual(counts);
+  });
+
+  test('new mode is filterable and searchable without a career display name', () => {
+    const arena = mkMatch({ matches_id: 'arena', mode: 'abilitydraftarena', career: {} });
+    const matches = [m1, arena];
+    expect(facetValueCounts(matches, EMPTY_FILTERS, 'modes').get('异变轮战')).toBe(1);
+    expect(applyFilters(matches, { ...EMPTY_FILTERS, modes: ['异变轮战'] })).toEqual([arena]);
+    expect(applyFilters(matches, { ...EMPTY_FILTERS, query: '异变轮战' })).toEqual([arena]);
+  });
+
   test('map selection narrows available heroes', () => {
     const fs: FilterState = { ...EMPTY_FILTERS, maps: ['莲华古城'] };
     expect([...facetValueCounts(all, fs, 'heroes').keys()]).toEqual(['捷风']);
@@ -328,12 +412,12 @@ describe('visible filter normalization', () => {
     expect(normalized.heroes).toEqual(['捷风']);
     expect(normalized.maps).toEqual([]);
     expect(normalized.results).toEqual(['win']);
-    expect(normalized.achievements).toEqual(['svp']);
+    expect(normalized.achievements).toEqual(['svp', 'other']);
     expect(normalized.kills).toEqual([20, null]);
     expect(normalized.kda).toEqual([2, 5]);
     expect(normalized.dateRange).toEqual([null, null]);
     expect(normalized.query).toBe('');
-    expect(activeFilterCount(normalized)).toBe(5);
+    expect(activeFilterCount(normalized)).toBe(6);
 
     normalized.heroes.push('贤者');
     expect(sanitizePersistedFilters({}).heroes).toEqual([]);
@@ -342,6 +426,13 @@ describe('visible filter normalization', () => {
 });
 
 describe('fuse.js text search', () => {
+  test('legacy player preferences do not narrow the library after upgrading', () => {
+    const fs = sanitizePersistedFilters({ playerQuery: 'OldQuery', playerMode: 'exact', queryMode: 'exact', heroes: ['捷风'] });
+    expect(fs).not.toHaveProperty('playerQuery');
+    expect(fs).not.toHaveProperty('playerMode');
+    expect(fs).not.toHaveProperty('queryMode');
+    expect(applyFilters(all, fs).length).toBe(2);
+  });
   test('query matches CN hero name', () => {
     const fs: FilterState = { ...EMPTY_FILTERS, query: '捷风' };
     const result = applyFilters(all, fs);

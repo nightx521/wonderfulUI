@@ -15,7 +15,7 @@ x64，当前格式是 NSIS 安装程序，不是 MSI 或便携压缩包。
 - `versions.json`；
 - `packages/parser/tests/cli.test.ts` 中的 CLI 版本断言。
 
-使用 `bun run scripts/check-versions.ts` 检查版本、Release tag 和生产 updater 配置。
+使用 `bun run scripts/check-versions.ts` 检查版本、Release tag 和手动安装分发配置。
 
 ## 版本脚本
 
@@ -43,20 +43,10 @@ git push origin vX.Y.Z
 1. `validate` 在 Windows runner 上安装锁定的 Bun/Rust，执行版本检查、资源检查、类型检查、
    Bun/Vitest 测试和 Rust lib 测试；
 2. `build` 生成签名的 Tauri Windows x64 NSIS 产物；
-3. tag 发布时，`publish` 根据 `versions.json`/git log 生成 `latest.json`，并创建 GitHub
-   Release。
+3. tag 发布时，`publish` 创建 GitHub Release 并附上 Windows x64 NSIS 安装器。
 
-发布文件包括：
-
-```text
-WonderfulUI_<version>_x64-setup.exe
-WonderfulUI_<version>_x64-setup.exe.sig
-latest.json
-```
-
-`latest.json` 的 updater endpoint 固定为项目 GitHub Releases 的 HTTPS 地址；不要提交
-localhost endpoint、关闭签名校验或把私钥放入仓库。完整签名和更新 UI 约束见
-[docs/UPDATER.md](docs/UPDATER.md)。
+发布文件为 `WonderfulUI_<version>_x64-setup.exe`。私密仓库中的文件只有获得授权的
+用户可访问。手动覆盖安装和数据保留约定见 [安装与升级](docs/UPDATER.md)。
 
 ## 版本说明
 

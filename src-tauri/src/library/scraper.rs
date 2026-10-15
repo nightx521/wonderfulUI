@@ -121,18 +121,23 @@ fn read_snapshot_for_account(
     dir: &Path,
     openid: &str,
     identity: &AclosIdentityIndex,
-) -> (Option<String>, Option<String>, Vec<SnapshotAchievement>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Vec<SnapshotAchievement>,
+    Vec<crate::parser::model::SnapshotMatchDetail>,
+) {
     let snapshot_path = dir.join(format!("snapshot{}", openid));
-    let (snap_nick, snap_tag, achievements) =
+    let (snap_nick, snap_tag, achievements, match_details) =
         match parser::parse_snapshot_db(&snapshot_path, openid) {
-            Ok(data) => (data.nick, data.tag, data.achievements),
-            Err(_) => (None, None, Vec::new()),
+            Ok(data) => (data.nick, data.tag, data.achievements, data.match_details),
+            Err(_) => (None, None, Vec::new(), Vec::new()),
         };
     // Nick/tag: prefer ACLOS Local Storage LevelDB role cache
     // (`ACLOS_USER_ROLES_INFO` / `acloshighlight_user_<openid>`), then snapshot.
     // Achievements stay snapshot-only.
     let (nick, tag) = identity.merge_with_snapshot(openid, snap_nick, snap_tag);
-    (nick, tag, achievements)
+    (nick, tag, achievements, match_details)
 }
 
 fn upsert_source(conn: &Connection, dir: &Path, now: i64) -> rusqlite::Result<()> {
@@ -232,20 +237,24 @@ fn upsert_account(
     nick: Option<String>,
     tag: Option<String>,
     achievements: &[SnapshotAchievement],
+    match_details: &[crate::parser::model::SnapshotMatchDetail],
     parse_error: Option<&str>,
+    parse_error_code: Option<&str>,
     now: i64,
 ) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO accounts(
             openid, nick, tag, parse_error, source_id, source_path,
             source_size_bytes, source_mtime_ms, snapshot_size_bytes, snapshot_mtime_ms,
-            last_seen_at
+            last_seen_at, parse_error_code, match_details_json
          )
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(openid) DO UPDATE SET
            nick = excluded.nick,
            tag = excluded.tag,
            parse_error = excluded.parse_error,
+           parse_error_code = excluded.parse_error_code,
+           match_details_json = excluded.match_details_json,
            source_id = excluded.source_id,
            source_path = excluded.source_path,
            source_size_bytes = excluded.source_size_bytes,
@@ -264,7 +273,9 @@ fn upsert_account(
             source_meta.and_then(|m| m.mtime_ms),
             snapshot_meta.map(|m| m.size_bytes),
             snapshot_meta.and_then(|m| m.mtime_ms),
-            now
+            now,
+            parse_error_code,
+            serde_json::to_string(match_details).unwrap_or_else(|_| "[]".into())
         ],
     )?;
     conn.execute(
@@ -363,7 +374,8 @@ fn account_is_fresh(
                 source_size_bytes,
                 source_mtime_ms,
                 snapshot_size_bytes,
-                snapshot_mtime_ms
+                snapshot_mtime_ms,
+                match_details_json
              FROM accounts
              WHERE openid = ?1 AND source_id = ?2",
             params![openid, ACLOS_SOURCE_ID],
@@ -374,16 +386,18 @@ fn account_is_fresh(
                     row.get::<_, Option<i64>>(2)?,
                     row.get::<_, Option<i64>>(3)?,
                     row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             },
         )
         .optional()?;
 
-    let Some((parse_error, source_size, source_mtime, snapshot_size, snapshot_mtime)) = stored
+    let Some((parse_error, source_size, source_mtime, snapshot_size, snapshot_mtime, details)) =
+        stored
     else {
         return Ok(false);
     };
-    if parse_error.as_deref().is_some_and(|e| !e.is_empty()) {
+    if details.is_none() || parse_error.as_deref().is_some_and(|e| !e.is_empty()) {
         return Ok(false);
     }
 
@@ -620,10 +634,11 @@ pub fn scrape_wonderful_dir_with_mode(
         openid: String,
         path: std::path::PathBuf,
         source_meta: Option<SourceFileMeta>,
-        result: Result<crate::parser::model::WonderfulDbFile, String>,
+        result: Result<crate::parser::model::WonderfulDbFile, (&'static str, String)>,
         nick: Option<String>,
         tag: Option<String>,
         achievements: Vec<SnapshotAchievement>,
+        match_details: Vec<crate::parser::model::SnapshotMatchDetail>,
         snapshot_meta: Option<SourceFileMeta>,
     }
 
@@ -632,10 +647,10 @@ pub fn scrape_wonderful_dir_with_mode(
         .par_iter()
         .map(|&(idx, (openid, path, source_meta))| {
             let snapshot_meta = snapshot_file_meta(dir, openid);
-            let (nick, tag, achievements) =
+            let (nick, tag, achievements, match_details) =
                 read_snapshot_for_account(dir, openid, identity_for_parse.as_ref());
             let result = parser::parse_wonderful_db(path, openid)
-                .map_err(|e| format!("parse {}: {}", path.display(), e));
+                .map_err(|e| (e.code(), format!("parse {}: {}", path.display(), e)));
             ParsedAccount {
                 idx,
                 openid: openid.clone(),
@@ -645,6 +660,7 @@ pub fn scrape_wonderful_dir_with_mode(
                 nick,
                 tag,
                 achievements,
+                match_details,
                 snapshot_meta,
             }
         })
@@ -715,11 +731,33 @@ pub fn scrape_wonderful_dir_with_mode(
                     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                         .map_err(|e| e.to_string())?;
 
-                    // Empty highlight shells (common 96-byte WonderfulDb files): do not
-                    // keep them in the library — this app only surfaces accounts with
-                    // at least one match/video payload.
+                    // Empty data clears stale native matches and errors. Retain identity
+                    // so a named account can explain that no local highlights exist.
                     if file.matches.is_empty() {
                         purge_empty_account(&tx, &pa.openid).map_err(|e| e.to_string())?;
+                        let has_name = pa.nick.as_deref().is_some_and(|n| !n.trim().is_empty())
+                            || tx.query_row(
+                                "SELECT EXISTS(SELECT 1 FROM account_preferences WHERE openid = ?1
+                                 AND TRIM(COALESCE(custom_name, '')) <> '')",
+                                [&pa.openid], |row| row.get::<_, bool>(0),
+                            ).map_err(|e| e.to_string())?;
+                        if has_name {
+                            upsert_account(
+                                &tx,
+                                &pa.openid,
+                                &pa.path,
+                                pa.source_meta,
+                                pa.snapshot_meta,
+                                pa.nick.clone(),
+                                pa.tag.clone(),
+                                &pa.achievements,
+                                &pa.match_details,
+                                None,
+                                None,
+                                now,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        }
                         tx.commit().map_err(|e| e.to_string())?;
                         return Ok((0, 0, 0));
                     }
@@ -733,6 +771,8 @@ pub fn scrape_wonderful_dir_with_mode(
                         pa.nick.clone(),
                         pa.tag.clone(),
                         &pa.achievements,
+                        &pa.match_details,
+                        None,
                         None,
                         now,
                     )
@@ -837,7 +877,14 @@ pub fn scrape_wonderful_dir_with_mode(
                     }
                 }
             }
-            Err(e) => {
+            Err((code, e)) => {
+                if app.is_some() {
+                    crate::app_log::write(
+                        crate::app_log::LogLevel::Warn,
+                        "account-read",
+                        format!("account={} code={code}; {e}", pa.openid),
+                    );
+                }
                 let persisted_error = (|| -> rusqlite::Result<()> {
                     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
                     upsert_account(
@@ -849,7 +896,9 @@ pub fn scrape_wonderful_dir_with_mode(
                         pa.nick.clone(),
                         pa.tag.clone(),
                         &pa.achievements,
+                        &pa.match_details,
                         Some(e.as_str()),
+                        Some(code),
                         now,
                     )?;
                     tx.commit()
@@ -955,6 +1004,120 @@ mod tests {
     use super::*;
     use crate::library::db::{migrate, open_memory_for_test};
     use std::path::PathBuf;
+
+    fn write_encrypted_fixture(path: &Path, openid: &str, json: &str) -> Vec<u8> {
+        use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+        let (key, iv) = crate::parser::crypto::derive_key_iv(openid);
+        let length = json.len();
+        let mut padded = vec![0; length + 16];
+        padded[..length].copy_from_slice(json.as_bytes());
+        let cipher = cbc::Encryptor::<aes::Aes256>::new_from_slices(&key, &iv)
+            .unwrap()
+            .encrypt_padded_mut::<Pkcs7>(&mut padded, length)
+            .unwrap();
+        let bytes = hex::encode(cipher).into_bytes();
+        std::fs::write(path, &bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn encrypted_empty_data_clears_errors_keeps_identity_and_is_readonly() {
+        let dir = std::env::temp_dir().join(format!("wui-empty-account-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("123");
+        let snapshot_path = dir.join("snapshot123");
+        let snapshot_bytes = write_encrypted_fixture(
+            &snapshot_path,
+            "123",
+            r#"{"key_snapshot_list123":[{"matches_id":"fixture-match","snapshot":{"ss_nick":"Fixture","ss_nick_id":"001","ss_type":"match","ss_achieve_type":"","ss_result_infos":{"IsDraw":"1","HasWon":0}}},{"matches_id":"clip","snapshot":{"ss_type":"video","ss_achieve_type":"","ss_result_infos":{"HasWon":true}}}]}"#,
+        );
+        let conn = open_memory_for_test().unwrap();
+        migrate(&conn).unwrap();
+        std::fs::write(&path, b"not hex").unwrap();
+        let first = scrape_wonderful_dir(&conn, &dir, "manual").unwrap();
+        assert_eq!(first.errors_seen, 1);
+        let failed = crate::library::db::load_library_view(&conn, "fixture").unwrap();
+        assert_eq!(
+            failed.accounts[0].error_code.as_deref(),
+            Some("invalid_file")
+        );
+        conn.execute(
+            "INSERT INTO account_preferences(openid, custom_name, updated_at) VALUES('123', 'Alias', 1)",
+            [],
+        )
+        .unwrap();
+
+        for json in ["{}", r#"{"key_wonderful_list_123":[]}"#] {
+            let bytes = write_encrypted_fixture(&path, "123", json);
+            let summary = scrape_wonderful_dir_with_mode(
+                &conn,
+                &dir,
+                "manual",
+                ScrapeMode::Incremental,
+                None,
+            )
+            .unwrap();
+            assert_eq!((summary.errors_seen, summary.matches_seen), (0, 0));
+            let view = crate::library::db::load_library_view(&conn, "fixture").unwrap();
+            assert_eq!(view.accounts.len(), 1);
+            assert_eq!(view.total_errors, 0);
+            let account = &view.accounts[0];
+            assert_eq!(account.nick.as_deref(), Some("Fixture"));
+            assert_eq!(account.custom_name.as_deref(), Some("Alias"));
+            assert_eq!(account.match_count, 0);
+            assert_eq!(account.match_details.len(), 1);
+            assert_eq!(
+                account.match_details[0].achievement.as_deref(),
+                Some("normal")
+            );
+            assert_eq!(account.match_details[0].is_draw, Some(true));
+            assert_eq!(account.match_details[0].has_won, Some(false));
+            assert!(account.error.is_none() && account.error_code.is_none());
+            conn.execute(
+                "UPDATE accounts SET match_details_json = NULL WHERE openid = '123'",
+                [],
+            )
+            .unwrap();
+            let refreshed = scrape_wonderful_dir_with_mode(
+                &conn,
+                &dir,
+                "manual",
+                ScrapeMode::Incremental,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                refreshed.skipped_accounts, 0,
+                "legacy accounts must refresh snapshot metadata once"
+            );
+            let skipped = scrape_wonderful_dir_with_mode(
+                &conn,
+                &dir,
+                "manual",
+                ScrapeMode::Incremental,
+                None,
+            )
+            .unwrap();
+            assert_eq!(skipped.skipped_accounts, 1);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        assert_eq!(std::fs::read(&snapshot_path).unwrap(), snapshot_bytes);
+        // A local display override also retains an empty account without a snapshot.
+        // Anonymous shells must stay out of persisted account statistics.
+        std::fs::remove_file(&snapshot_path).unwrap();
+        write_encrypted_fixture(&dir.join("456"), "456", "{}");
+        let summary =
+            scrape_wonderful_dir_with_mode(&conn, &dir, "manual", ScrapeMode::Full, None).unwrap();
+        assert_eq!(summary.errors_seen, 0);
+        let view = crate::library::db::load_library_view(&conn, "fixture").unwrap();
+        assert_eq!(view.accounts.len(), 1);
+        assert_eq!(view.accounts[0].custom_name.as_deref(), Some("Alias"));
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn fixture_dir() -> PathBuf {
         if let Ok(dir) = std::env::var("WONDERFUL_DB_DIR") {
@@ -1122,6 +1285,7 @@ mod tests {
         assert_eq!(view.accounts.len(), 1);
         assert_eq!(view.accounts[0].openid, "1234567890");
         assert_eq!(view.accounts[0].match_count, 0);
+        assert_eq!(view.accounts[0].error_code.as_deref(), Some("invalid_file"));
         assert!(view.accounts[0]
             .error
             .as_deref()
@@ -1146,9 +1310,9 @@ mod tests {
         migrate(&conn).expect("migration succeeds");
         conn.execute(
             "INSERT INTO accounts(
-                openid, source_id, source_path, source_size_bytes, source_mtime_ms, last_seen_at
+                openid, source_id, source_path, source_size_bytes, source_mtime_ms, last_seen_at, match_details_json
              )
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, '[]')",
             params![
                 "1234567890",
                 ACLOS_SOURCE_ID,

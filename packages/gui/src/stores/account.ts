@@ -3,7 +3,8 @@ import { ref, computed } from 'vue';
 import { invoke } from '../tauri-adapter.ts';
 import { accountDisplayLabel, applyAccountOrder } from '../utils/account-preferences.ts';
 import { collectMatchAssetEntries } from '../utils/valorant-assets.ts';
-import type { MatchRecord } from '@wonderful-ui/parser';
+import type { MatchRecord, SnapshotMatchDetail } from '@wonderful-ui/parser';
+import { attachMatchMetadata } from '../utils/match-metadata.ts';
 
 export interface Account {
   openid: string;
@@ -13,7 +14,9 @@ export interface Account {
   tag?: string;
   customName?: string;
   achievements?: { matchesId: string; achvType: string; typeStr: string }[];
+  matchDetails?: SnapshotMatchDetail[];
   error?: string;
+  errorCode?: string;
 }
 
 export interface LoadResult {
@@ -32,7 +35,8 @@ export interface AclosStatus {
 export const ALL_ACCOUNTS = '__all__';
 
 export function isVisibleAccount(account: Account): boolean {
-  return (account.matchCount ?? 0) > 0 || !!account.error?.trim();
+  return (account.matchCount ?? 0) > 0 || !!account.error?.trim()
+    || !!account.nick?.trim() || !!account.customName?.trim();
 }
 
 export const useAccountStore = defineStore('account', () => {
@@ -53,8 +57,7 @@ export const useAccountStore = defineStore('account', () => {
   // first-run / onboarding screen.
   const aclosStatus = ref<AclosStatus | null>(null);
 
-  // Hide only clean, empty WonderfulDb shells. Parse failures remain visible
-  // so the user has a recovery path instead of a misleading empty library.
+  // Named empty accounts explain their state; anonymous empty shells stay hidden.
   const realAccounts = computed(() =>
     accounts.value.filter(isVisibleAccount),
   );
@@ -78,20 +81,6 @@ export const useAccountStore = defineStore('account', () => {
 
   const accountOrder = computed(() => realAccounts.value.map(a => a.openid));
 
-  const matchAchievements = computed(() => {
-    const map = new Map<string, { type: 'mvp' | 'svp'; typeStr: string }>();
-    for (const a of realAccounts.value) {
-      if (a.achievements) {
-        for (const achv of a.achievements) {
-          if (achv.achvType === 'mvp' || achv.achvType === 'svp') {
-            map.set(achv.matchesId, { type: achv.achvType as 'mvp' | 'svp', typeStr: achv.typeStr });
-          }
-        }
-      }
-    }
-    return map;
-  });
-
   async function scanShell() {
     const shell = await invoke<{ accounts: Account[]; dir: string; totalErrors: number }>('scan_shell');
     accounts.value = shell.accounts;
@@ -108,6 +97,8 @@ export const useAccountStore = defineStore('account', () => {
   }
 
   function applyLibrary(data: LoadResult): void {
+    loadedMatchIds.value.clear();
+    attachMatchMetadata(data.matches, data.accounts);
     accounts.value = data.accounts;
     matches.value = data.matches;
     // If the selected account disappeared (e.g. purged empty shell), fall back.
@@ -230,7 +221,7 @@ export const useAccountStore = defineStore('account', () => {
   return {
     accounts, selectedAccountId, matches, dir, totalErrors, scraping, libraryRevision,
     assetPathCache, loadedMatchIds, aclosStatus,
-    realAccounts, accountsForRender, accountLabels, accountOrder, matchAchievements,
+    realAccounts, accountsForRender, accountLabels, accountOrder,
     scanShell, loadLibrary, loadLibraryIfCurrent, scrapeLibrary, cacheAssets, probeAclos,
     selectAccount, saveAccountOrder, renameAccount,
   };

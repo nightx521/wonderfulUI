@@ -17,7 +17,6 @@
       </Teleport>
       <ToastHost />
       <SettingsView v-if="settings.isOpen" />
-      <UpdateModal />
     </template>
   </div>
 </template>
@@ -33,7 +32,6 @@ import FilterRail from './components/match/FilterRail.vue';
 import ToastHost from './components/common/ToastHost.vue';
 import DetailView from './views/DetailView.vue';
 import OnboardingView from './components/common/OnboardingView.vue';
-import UpdateModal from './components/update/UpdateModal.vue';
 import {
   watch,
   onMounted,
@@ -45,10 +43,8 @@ import {
 import { listen, type UnlistenFn } from './tauri-adapter.ts';
 import { useAccountStore } from './stores/account.ts';
 import { useUiStore } from './stores/ui.ts';
-import { useUpdateStore } from './stores/update.ts';
 import { useTooltip, isTipEligible } from './composables/useTooltip.ts';
 import { clientLog } from './utils/client-log.ts';
-import { installUpdateDebug } from './utils/update-debug.ts';
 import { useAppShortcuts } from './composables/useAppShortcuts.ts';
 import { useSettingsStore } from './stores/settings.ts';
 import {
@@ -60,7 +56,6 @@ import {
 const filter = useFilterStore();
 const account = useAccountStore();
 const ui = useUiStore();
-const update = useUpdateStore();
 const settings = useSettingsStore();
 const SettingsView = defineAsyncComponent(() => import('./views/SettingsView.vue'));
 const bootRef = ref<InstanceType<typeof BootOverlay> | null>(null);
@@ -196,6 +191,7 @@ const simulateFirstRun = ref<boolean>((() => {
 
 const showOnboarding = computed(() => {
   if (simulateFirstRun.value) return true;
+  if (account.matches.length > 0) return false;
   const s = account.aclosStatus;
   if (!s) return false; // still probing
   return !s.dirExists || !s.hasAccounts;
@@ -272,16 +268,6 @@ async function performBoot() {
     selectInitialAccount();
     booted.value = true;
     bootRef.value?.complete();
-    // 启动静默更新检查。必须在 runBoot 显露 UI 之后调用，不与后台抓取竞争
-    // （AGENTS.md / docs/UPDATER.md「启动检查时机」）。失败静默；成功有更新时
-    // 亮侧栏红点，未跳过的版本自动开弹窗。fire-and-forget。
-    // DEV：始终 mock 有更新，便于调 UpdateModal（不打真实 GitHub）。
-    // 生产构建 import.meta.env.DEV === false，走真实 check。
-    if (import.meta.env.DEV) {
-      update.debugAvailable({ silent: true });
-    } else {
-      update.checkForUpdate(true).catch(() => {});
-    }
   } catch (e) {
     if (appDisposed) return;
     bootError.value = (e as Error)?.message ?? String(e);
@@ -303,7 +289,6 @@ async function retryBoot() {
 useAppShortcuts();
 
 onMounted(() => {
-  installUpdateDebug(() => update);
   void runBoot();
 });
 

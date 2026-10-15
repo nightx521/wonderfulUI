@@ -52,7 +52,7 @@ ${StrCase}
 ${StrLoc}
 
 {{#if installer_hooks}}
-!include "{{installer_hooks}}"
+!include /CHARSET=UTF8 "{{installer_hooks}}"
 {{/if}}
 
 !define WEBVIEW2APPGUID "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
@@ -268,14 +268,14 @@ Function PageReinstall
   ; Reinstalling the same version
   ${If} $R0 = 0
     StrCpy $R1 "$(alreadyInstalledLong)"
-    StrCpy $R2 "$(addOrReinstall)"
+    StrCpy $R2 "覆盖安装 / 修复（保留资料和设置）"
     StrCpy $R3 "$(uninstallApp)"
     !insertmacro MUI_HEADER_TEXT "$(alreadyInstalled)" "$(chooseMaintenanceOption)"
   ; Upgrading
   ${ElseIf} $R0 = 1
-    StrCpy $R1 "$(olderOrUnknownVersionInstalled)"
-    StrCpy $R2 "$(uninstallBeforeInstalling)"
-    StrCpy $R3 "$(dontUninstall)"
+    StrCpy $R1 "检测到旧版本，将更新现有安装。默认沿用原安装目录。"
+    StrCpy $R2 "覆盖升级（保留资料和设置）"
+    StrCpy $R3 "先卸载旧版再安装"
     !insertmacro MUI_HEADER_TEXT "$(alreadyInstalled)" "$(choowHowToInstall)"
   ; Downgrading
   ${ElseIf} $R0 = -1
@@ -341,7 +341,11 @@ Function PageReinstallUpdateSelection
   ${EndIf}
 FunctionEnd
 Function PageLeaveReinstall
-  ${NSD_GetState} $R2 $R1
+  ${If} $PassiveMode = 1
+    StrCpy $R1 1 ; Passive mode uses the default first choice without a dialog
+  ${Else}
+    ${NSD_GetState} $R2 $R1
+  ${EndIf}
 
   ; If migrating from Wix, always uninstall
   ${If} $WixMode = 1
@@ -364,10 +368,10 @@ Function PageLeaveReinstall
       Goto reinst_uninstall
     ${EndIf}
   ${ElseIf} $R0 = 1 ; Upgrading
-    ${If} $R1 = 1              ; User chose to uninstall
-      Goto reinst_uninstall
+    ${If} $R1 = 1              ; Default: upgrade the existing installation
+      Goto reinst_done
     ${Else}
-      Goto reinst_done         ; User chose NOT to uninstall
+      Goto reinst_uninstall    ; User explicitly chose to uninstall first
     ${EndIf}
   ${ElseIf} $R0 = -1 ; Downgrading
     ${If} $R1 = 1              ; User chose to uninstall
@@ -518,7 +522,7 @@ FunctionEnd
 {{/each}}
 !insertmacro MUI_RESERVEFILE_LANGDLL
 {{#each language_files}}
-  !include "{{this}}"
+  !include /CHARSET=UTF8 "{{this}}"
 {{/each}}
 
 ; WUI: single LangString for the "保留本地用户配置" checkbox.

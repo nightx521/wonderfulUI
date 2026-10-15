@@ -349,6 +349,11 @@ function startMockBootEvents(): void {
 async function mockInvoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   await new Promise(resolve => window.setTimeout(resolve, 30));
   switch (cmd) {
+    case 'select_import_directory':
+    case 'preview_history_import':
+    case 'commit_history_import':
+      throw new Error('导入需要 Windows 桌面应用，请在桌面版使用此功能。');
+    case 'cancel_history_import': return undefined as T;
     case 'scan_shell':
       startMockBootEvents();
       return deepClone({

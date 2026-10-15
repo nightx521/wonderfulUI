@@ -3,5 +3,5 @@ export { deriveKeyIv, aesDecrypt, decryptWonderfulDbBuffer } from './crypto.ts';
 export { parseWonderfulDbBuffer, parseSnapshotDbBuffer, readWonderfulDbText, WonderfulDbError } from './reader.ts';
 export type {
   MatchRecord, MatchMap, MatchStats, Agent, VideoItem, EventItem, RoundItem, RoundClip, RoundHonor,
-  WonderfulDbFile, SnapshotRecord, AccountSnapshot, SnapshotAchievement,
+  WonderfulDbFile, SnapshotRecord, AccountSnapshot, SnapshotAchievement, SnapshotMatchDetail,
 } from './model.ts';

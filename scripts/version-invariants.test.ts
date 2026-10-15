@@ -6,7 +6,7 @@ describe('releaseTagMismatch', () => {
     expect(releaseTagMismatch('1.2.3', 'tag', 'v1.2.3')).toBeUndefined();
   });
 
-  test('rejects a tag that would publish a mismatched updater URL', () => {
+  test('rejects a tag that would publish a mismatched release version', () => {
     expect(releaseTagMismatch('1.2.3', 'tag', 'v1.2.2')).toBe(
       'release tag must be v1.2.3, got v1.2.2',
     );

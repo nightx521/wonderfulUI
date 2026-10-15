@@ -5,7 +5,7 @@
         <img class="onboarding-logo" :src="brandLogoUrl" alt="" aria-hidden="true" width="48" height="48" decoding="async" />
         <h1 id="onboarding-title" class="onboarding-title">欢迎使用 WonderfulUI</h1>
         <p class="onboarding-sub">
-          WonderfulUI 是用于整理和回看本地无畏契约高光的个人资料库。它只读取 ACLOS 已生成的数据，不修改游戏文件；正式版会检查更新，快传只在你主动开启时使用局域网。
+          WonderfulUI 是用于整理和回看本地无畏契约高光的个人资料库。它只读取 ACLOS 已生成的数据，不修改游戏文件；快传只在你主动开启时使用局域网。
         </p>
       </header>
 
@@ -62,21 +62,13 @@
           <WIcon icon="ph:arrows-clockwise" :size="14" />
           重新检测
         </button>
-        <button
-          class="btn btn-ghost onboarding-settings"
-          type="button"
-          :data-tip="'当前使用 ACLOS 默认目录，暂不支持更改'"
-          @click="onSettings"
-          disabled
-        >
-          <WIcon icon="ph:folder-open" :size="14" />
-          数据目录固定
-        </button>
       </footer>
+
+      <HistoryImport />
 
       <p class="onboarding-note">
         <WIcon icon="ph:info" :size="12" />
-        应用不会上传资料库或修改游戏文件；正式版启动时会检查更新，快传只在你主动开启时使用局域网。
+        应用不会上传资料库或修改游戏文件；快传只在你主动开启时使用局域网。
       </p>
     </div>
   </main>
@@ -86,14 +78,13 @@
 import { computed } from 'vue';
 import WIcon from './WIcon.vue';
 import { useAccountStore, type AclosStatus } from '../../stores/account.ts';
-import { useSettingsStore } from '../../stores/settings.ts';
+import HistoryImport from '../settings/HistoryImport.vue';
 
 defineEmits<{
   retry: [];
 }>();
 
 const account = useAccountStore();
-const settings = useSettingsStore();
 
 const brandLogoUrl = new URL('../../assets/logo.svg', import.meta.url).href;
 
@@ -115,13 +106,6 @@ const dirTagClass = computed(() => {
   return 'is-ok';
 });
 
-function onSettings() {
-  // Manual directory selection is a future addition (needs a Tauri
-  // dialog plugin + persistence + rescan). Disabled in this pass so
-  // users do not see a dead button; settings modal is still reachable
-  // from the (now-hidden) top bar.
-  settings.setOpen(true);
-}
 </script>
 
 <style scoped>

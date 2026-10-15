@@ -4,8 +4,46 @@ This document holds GUI implementation conventions that are too detailed for `AG
 
 ## Rendering Model
 
+TopBar searches library metadata. Account scope, categories and numeric/date ranges
+remain independent. Facets ignore text queries to keep temporary searches from
+pruning selections. Persisted filters are sanitized to the current supported keys.
+
+Room type is a separate single-choice chip section after mode and before result:
+All clears the condition; Custom and Non-custom select one category. Derive it
+only from the trimmed, case-insensitive primary mode token `customgame`; all
+other or missing values are Non-custom. Keep the existing faceting semantics,
+so room counts ignore their own selection and text query while respecting other
+categories. Include room selections in summaries, clearing and persistence.
+
+Achievement facets use MVP, SVP, Other in that order. Other groups normal and
+unknown facts without changing the metadata used for cover badges or results.
+Migrate persisted normal/unknown selections to other and deduplicate on load.
+
+AbilityDraftAgent uses its bundled role portrait through the regular asset resolver.
+Competitive match rows resolve their recorded before/after ranks through
+`utils/match-badges.ts` and `RankBadge.vue`. Explicit primary tier 0 is unranked;
+missing, malformed or unused codes are unknown. Each recognized rank has its own
+bundled icon. Unknown state or image failures use a neutral placeholder while
+retaining the correct text; snapshot defaults never supply historical rank.
+Four-kill and five-kill moment badges sit beside K/D/A and may both appear.
+They have distinct blue-purple/gold surfaces plus text labels, and count each
+recorded video category once. Tooltips name the recorded moment source.
+Rank changes show both names/icons with the full meaning available to the row's
+ARIA label and tooltip. Keep all four existing row lines and virtual row height;
+rank text may ellipsize at narrow widths rather than wrapping.
+List/detail share result semantics and missing-stat formatting. Missing source
+stats render an em dash; explicit zero stays zero. Unsettled all-zero placement
+records show a short incomplete-stat tooltip rather than invented full-match stats.
+
+Account read failures use the optional backend `errorCode` and curated copy in
+`utils/account-status.ts` for the sidebar tooltip and list empty state. Keep raw
+`error` details in diagnostics; never render private paths or identifiers from
+them as user-facing error text. Named empty accounts remain visible with zero
+highlights and a normal empty state. An encrypted empty object is valid empty
+highlight data, not a failure or evidence that recording was disabled.
+
 - The app uses a stable DOM skeleton.
-- `App.vue` builds `.app`, `.topbar`, `.panes`, and the pane containers once after load. State management is driven by 8 Pinia stores (`account`, `filter`, `detail`, `player`, `settings`, `share`, `ui`, `update`) and vue-router (`createMemoryHistory`).
+- `App.vue` builds `.app`, `.topbar`, `.panes`, and the pane containers once after load. State management is driven by 7 Pinia stores (`account`, `filter`, `detail`, `player`, `settings`, `share`, `ui`) and vue-router (`createMemoryHistory`).
 - State changes are driven by reactive Pinia stores, not manual DOM helpers.
 - Do not reintroduce `root.innerHTML = ''` or whole-`#app` rebuilds for ordinary interactions.
 - If a scrollable subtree must be rebuilt, preserve that subtree's `scrollTop`.
@@ -176,6 +214,16 @@ valid and their trigger text must explicitly render `从 …` or `至 …`. The 
 dialog opens at whichever bound exists and closing an untouched draft must not
 collapse that open-ended range into a single day.
 
+Source-device filters store source ids and render names from `library_sources`.
+One merged match can carry `local` and multiple import ids; count it once per
+source, use OR within the source category and AND with other categories.
+The detail view keeps all merged videos for the selected match. HistoryImport
+is shared by onboarding and the settings library tab, uses native selection
+tokens via the adapter, invalidates previews after input changes, and commits
+only after explicit confirmation. Missing imported media keeps its match but
+has an empty path and a disabled play button. Reloading the library invalidates
+the on-demand rounds cache.
+
 ## Account Sentinel
 
 `ALL_ACCOUNTS = '__all__'` is a synthetic sentinel, not a real account.
@@ -234,8 +282,18 @@ MVP/SVP badge:
 - Shows `MVP` (gold background, `Crown` icon) or `SVP` (magenta-purple, `Medal` icon).
 - Only rendered when `snapshot<openid>` has `ss_achieve_type === "mvp" | "svp"`.
 - Never shown as placeholder; silently absent when data is missing.
-- Sourced from `parseSnapshotDbBuffer` → `AccountSnapshot.achievements[]`, folded
-  into `matchAchievements` Map keyed by `matches_id` after `scan_all`.
+- `applyLibrary` attaches account + match scoped snapshot facts through
+  `utils/match-metadata.ts`. Badges and achievement filters share those facts;
+  legacy positive awards remain supported, missing metadata stays unknown.
+- Ordinary requires an explicit empty award on a match snapshot; it is never
+  inferred from absent MVP/SVP or performance statistics.
+
+Match result pills and result facets use `utils/match-result.ts` in both list
+and detail. Draws show neutral gray `平`; unreliable results show neutral gray
+`—` with an explanation on hover and in the accessible label. Zero or incomplete
+scores are hidden. Deathmatch and ability draft ignore score ties and hide round
+scores; final placement is not inferred. AbilityDraftAgent uses `轮战机器人` and
+the generic AbilityDraft map uses `轮战竞技场`, including search and facets.
 
 Detail stats layout:
 
@@ -322,7 +380,7 @@ Fallbacks are documented in `docs/ACLOS_FORMAT.md`.
   reintroduce runtime CDN fallback.
 - The same build check rejects external CSS imports and auto-loaded remote
   script/link/img/media resources. User-initiated external links in the About
-  view and the updater endpoint are separate, explicit network actions.
+  view are separate, explicit external actions.
 - `collectMatchAssetEntries` and the Rust `cache_asset(s)` commands remain as
   backward-compatible no-op/legacy boundaries. Canonical resolution returns
   local paths, so current GUI scans do not start remote asset downloads.
@@ -569,7 +627,18 @@ Progress bar:
   zero-width/non-finite track instead of emitting a `NaN` percentage while a
   responsive layout is settling.
 - `lastBufferedPct` must be a `ref`; a plain `let` is invisible to Vue's reactivity and the buffered bar will never update.
-- Event marker container uses `.closest('.player-event-marker, .player-event-markers.is-canvas')` check in `onMouseDown` instead of `@mousedown.stop`. Adding `@mousedown.stop` on the container breaks track-seeking in canvas mode because `.is-canvas` has `pointer-events: auto`.
+- Dragging uses primary Pointer Events with pointer capture plus document-level
+  move/up/cancel listeners. Lost capture, missing mouse buttons, window blur,
+  unmount and video replacement end the gesture and remove listeners.
+- Fill, thumb, ARIA time and the floating time preview follow the pointer immediately.
+  PlayerHost updates its requested time synchronously; decoding cadence does not
+  drive drag feedback. The existing playback/pause state is preserved.
+- `scrub-seek.ts` keeps one decoder seek in flight and only the latest pending target,
+  caps writes at 20 Hz and recovers after 800 ms if seeked is missing. Release commits
+  the final coordinate. Session changes, close, errors and screenshot capture cancel
+  pending work. Controls stay visible during drag.
+- DOM event marker hits keep their click/keyboard jumps. Canvas marker hits are
+  checked individually so blank canvas positions still allow track seeking.
 - `CANVAS_MARKER_THRESHOLD = Infinity` (current implementation keeps marker rendering in the DOM).
 
 Controls click propagation:

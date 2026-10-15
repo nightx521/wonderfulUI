@@ -10,6 +10,9 @@ vi.mock('../src/tauri-adapter.ts', () => ({
 import { useAccountStore, type LoadResult } from '../src/stores/account.ts';
 import { useSettingsStore, type LogStatus } from '../src/stores/settings.ts';
 import type { LibraryStats } from '../src/utils/library-stats.ts';
+import type { MatchRecord } from '@wonderful-ui/parser';
+import { matchAchievement } from '../src/utils/match-metadata.ts';
+import { resolveMatchResult } from '../src/utils/match-result.ts';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -45,6 +48,19 @@ beforeEach(() => {
 });
 
 describe('account store request lifecycle', () => {
+  test('library load attaches account-scoped facts to list records', async () => {
+    const m = { openID: 'fixture-account', matches_id: 'fixture-match', agent: { agent_name: '' }, map: { map_id: '' },
+      stats: { has_won: false, rounds_won: 0, rounds_lost: 0 }, videos: [] } as unknown as MatchRecord;
+    invokeMock.mockResolvedValue({ dir: '', totalErrors: 0, matches: [m], accounts: [{
+      openid: 'fixture-account', path: '', matchCount: 1,
+      matchDetails: [{ matchesId: 'fixture-match', achievement: 'normal', isDraw: true }],
+    }] });
+    const store = useAccountStore();
+    await store.loadLibrary();
+    expect(matchAchievement(store.matches[0]!)).toBe('normal');
+    expect(resolveMatchResult(store.matches[0]!)).toMatchObject({ outcome: 'draw', score: '' });
+  });
+
   test('probes only the fixed backend ACLOS source without a renderer path', async () => {
     invokeMock.mockResolvedValue({
       dir: 'C:\\Users\\tester\\AppData\\Roaming\\ACLOS\\WonderfulDb',
@@ -58,15 +74,18 @@ describe('account store request lifecycle', () => {
     expect(invokeMock).toHaveBeenCalledWith('aclos_status');
   });
 
-  test('keeps parse-error accounts visible while hiding clean empty shells', () => {
+  test('keeps named empty and parse-error accounts while hiding anonymous empty shells', () => {
     const account = useAccountStore();
     account.accounts = [
       { openid: 'broken', path: 'D:\\WonderfulDb\\broken', matchCount: 0, error: 'parse failed' },
       { openid: 'empty', path: 'D:\\WonderfulDb\\empty', matchCount: 0 },
+      { openid: 'named', path: '', matchCount: 0, nick: '示例账户' },
+      { openid: 'custom', path: '', matchCount: 0, customName: '自定义账户' },
+      { openid: 'blank', path: '', matchCount: 0, nick: '  ', tag: '001' },
       { openid: 'ready', path: 'D:\\WonderfulDb\\ready', matchCount: 3 },
     ];
 
-    expect(account.realAccounts.map(item => item.openid)).toEqual(['broken', 'ready']);
+    expect(account.realAccounts.map(item => item.openid)).toEqual(['broken', 'named', 'custom', 'ready']);
   });
 
   test('coalesces overlapping scrape requests and clears loading once', async () => {

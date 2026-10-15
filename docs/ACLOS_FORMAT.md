@@ -13,14 +13,15 @@
 
 ## 输入位置和账户枚举
 
-GUI 后端只从用户 profile 推导 ACLOS 默认目录：
+GUI 后端的本机扫描从用户 profile 推导 ACLOS 默认目录：
 
 ```text
 %USERPROFILE%\AppData\Roaming\ACLOS\WonderfulDb
 ```
 
-`HOME` 是非 Windows 测试环境的回退。GUI 当前没有自定义目录选择器；CLI 的 `scan`、
-`show` 和 `scan-all` 可以接收显式路径，便于开发和测试。
+`HOME` 是非 Windows 测试环境的回退。本机扫描目录固定；历史导入可以通过原生对话框
+选择已复制的 WonderfulDb 文件夹和当前视频目录，预览后写入应用资料库。CLI 的
+`scan`、`show` 和 `scan-all` 可以接收显式路径，便于开发和测试。
 
 目录中的账户主文件是没有扩展名、basename 为非空 ASCII 十进制 openid 的普通文件。
 目录、符号链接、隐藏说明文件和其它非数字文件不能成为账户。相邻的
@@ -30,6 +31,11 @@ GUI 后端只从用户 profile 推导 ACLOS 默认目录：
 产品逻辑、文档示例或测试特判。
 
 ## 编码和解密
+
+账户主文件完成解密后，合法空对象 `{}` 与合法的空高光数组均表示当前没有高光记录，
+不属于读取失败。只有完整解密且 JSON 解析成功的空对象享有此规则；空文件、截断密文、
+非对象 JSON，以及非空对象中缺少高光列表或字段类型不兼容仍需报告错误。
+snapshot 的身份和对局摘要不能代替高光主记录，也不能据此判断录制当时是否开启。
 
 已观察到的 ACLOS 数据（包括 2.15.3.449 时代的格式）具有以下形态；版本号是兼容性
 观察，不是用户必须安装的 WonderfulUI 版本要求：
@@ -54,23 +60,68 @@ MVP/SVP 来自 snapshot 的 `ss_type === "match"` 记录：
 
 - `ss_achieve_type` 为 `mvp` 或 `svp`；
 - `ss_type_str` 是显示标签；
-- `matches_id` 用于连接对局。
+- `matches_id` 与账户 ID 一起用于连接对局。兼容旧格式的明确 MVP/SVP 标记也保留。
+- 普通只来自明确 `ss_type === "match"` 且 `ss_achieve_type === ""` 的记录；缺少字段
+  或 snapshot 时归缺失成就，不能把没有信息解释成普通。
+- `ss_result_infos.IsDraw` / `HasWon` 只从 match 记录读取，接受布尔值、0/1 及其字符串形式。
+  每项事实使用最新已知值，缺失字段不覆盖旧的有效事实；非法标记保持缺失。
+
+主记录的 `stats.result_known` / `score_known` 由 reader 根据原始胜负字段及两个比分字段
+是否齐全生成，避免默认 false/0 被当作真实结果。团队模式使用明确平局或完整有效的
+非零相同比分；0:0 隐藏比分，已知胜负只显示胜/负，否则用灰色“—”。个人乱斗和异变轮战
+不套用比分平局规则、不显示回合比分。特殊模式的主记录 false 与回合比分不足以确认失败；
+使用 match 摘要的明确 HasWon，或主记录明确 true，否则保持未知。当前没有可靠最终名次字段，
+不通过 KDA 或分数推算名次。
+
+reader 的 `stats.missing_stats` 保存缺失的 kills/deaths/assists/score 字段名，区别于明确零值。
+缺失统计显示“—”；特殊模式全零且缺少可靠结算时保留数值并提示统计可能不完整。
+旧索引若已经把缺失字段默认成零，无法单凭该索引还原源字段是否缺失；重新解析可补充标记。
+
+事件里的 KillerPlayerName / KilledPlayerName 用于事件列表和时间轴提示。
+PlayerName 可能保留本人编号，而击杀双方名称没有编号，不能将本人编号补给其他人。
+这些局部记录不代表组队或完整阵容；AssistInfos 的角色 ID 也不能当作昵称。
 
 snapshot 是可选且有历史缺口的数据源。不能把缺失成就解释成没有成就，也不能把它用于
 账户统计、胜率、排序、导出或跨对局聚合；UI 只允许在资料存在时显示并筛选。
 
+成就筛选提供 MVP、SVP、其他。其他是普通与缺少成就信息的展示分组，
+不会改变原始 normal/unknown 事实；旧筛选偏好的 normal/unknown 均迁移为 other 并去重。
+
+房间类型筛选只读取主记录 mode，去首尾空白并忽略大小写后，customgame 归自定义，
+其余归非自定义，包括空值或缺失。该二分是应用采用的分类规则，缺失标记可能造成遗漏。
+不通过 stats.mode_name 中的 CustomGame 片段或 career.game_mode 补全分类；
+靶场路径也可能带该片段。房间类型与玩法模式为独立条件，可叠加筛选。
+
 ## 展示字段和离线资源
+
+竞技段位只读取主记录 `tier.tier_before` / `tier.tier_after`。合法编号 0 表示未定级；
+字段缺失、空值、非法编号以及当前体系未使用的 1/2 表示未知，不能通过默认值补零。
+原生 Rust serde 将该对象保留在顶层；TypeScript CLI reader 将未知字段保留在 extras，
+GUI helper 兼容两种表示，明确存在的主字段优先。snapshot 升段子树的默认零值
+不用于覆盖或补全该对局的竞技段位，账号当前段位也不能替代历史记录。
+
+四杀/五杀标签分别来自明确的 `video_type === "四杀时刻" / "五杀时刻"`。
+同局两种记录可同时显示，同类多个视频不重复显示或累计为发生次数。
+没有标签仅表示缺少对应时刻视频；整场击杀数、视频标题和局部事件数量不用于推断。
 
 已知地图、英雄和模式通过生成的本地 registry 解析名称和图片，避免相同实体受单条
 ACLOS 记录影响而出现不同标签。未知实体可以显示 ACLOS 的通用 fallback，但不能为单个
 账户或样本添加分支。
 
+轮战机器人的 AbilityDraftAgent 使用同一 registry 与角色头像显示流程。
+元数据维护时读取完整 agents 列表，并纳入该非普通可选角色；仅请求
+isPlayableCharacter=true 会漏掉它。来源目前与 K/O 共用头像文件，按内容哈希去重，
+角色身份与“轮战机器人”描述性中文标签分别保留。
+
 - 资源 registry：`packages/gui/src/utils/generated/valorant-metadata.zh-CN.ts`；
+- 段位 registry：`packages/gui/src/utils/generated/valorant-ranks.zh-CN.ts`；
 - 统一解析：`packages/gui/src/utils/valorant-assets.ts`；
 - 维护来源：`packages/gui/assets/valorant-source/`；
 - 构建输出：忽略版本控制的 `packages/gui/public/valorant/` WebP。
 
 `bun run update:valorant-metadata` 是维护者显式运行的联网更新命令；
+`bun run update:valorant-ranks` 单独更新固定标准段位体系及徽章，按内容哈希保存来源 PNG。
+段位源徽章可为非正方形，构建时透明留边完整缩放到 128×128 WebP；
 `bun run assets:build` 和 `bun run assets:check` 使用已提交来源在本地构建和校验。应用
 运行时不应依赖图片 CDN；未知 HTTP(S)、协议相对和外部 SVG 资源应退化为文字/占位。
 

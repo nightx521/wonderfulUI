@@ -11,6 +11,7 @@
           type="button"
           :aria-pressed="entry.active"
           :data-value="entry.value"
+          :data-tip="section.key === 'results' && entry.value === 'unknown' ? '暂无可靠对局结果' : undefined"
           :style="{ animationDelay: `${Math.min(i, 8) * 12}ms` }"
           @click="onChipClick(section.key, entry.value)"
         >{{ entry.display }} {{ entry.count }}</button>
@@ -108,6 +109,7 @@
       </div>
     </div>
   </section>
+
 </template>
 
 <script setup lang="ts">
@@ -133,27 +135,45 @@ const allMatches = computed(() => {
 });
 
 const advancedExpanded = ref(false);
-
 const CAT_LABELS: Record<string, string> = {
-  heroes: '英雄', maps: '地图', modes: '模式',
+  sources: '来源设备',
+  heroes: '英雄', maps: '地图', modes: '模式', roomTypes: '房间类型',
   results: '胜负', achievements: '成就', videoTypes: '视频类型',
 };
-const RESULT_LABELS: Record<string, string> = { win: '胜', loss: '败' };
-const ACHV_LABELS: Record<string, string> = { mvp: 'MVP', svp: 'SVP' };
+const RESULT_LABELS: Record<string, string> = { win: '胜', loss: '负', draw: '平', unknown: '—' };
+const ACHV_LABELS: Record<string, string> = { mvp: 'MVP', svp: 'SVP', other: '其他' };
 
 const NUMERIC_LABELS: Record<string, string> = {
   kills: '击杀', kda: 'KDA', videoCount: '视频数',
 };
 
 const sections = computed(() => {
+  const sourceLabels = new Map([['local', '本机']]);
+  for (const m of allMatches.value) {
+    for (const source of m.library_sources ?? []) sourceLabels.set(source.id, source.id === 'local' ? '本机' : `导入设备 · ${source.label}`);
+  }
   return CATEGORY_KEYS.map(key => {
+    if (key === 'roomTypes') {
+      const counts = facetValueCounts(allMatches.value, filterStore.filters, key);
+      const selected = filterStore.filters.roomTypes;
+      return {
+        key, label: CAT_LABELS[key],
+        entries: [
+          { value: 'all', display: '全部', count: [...counts.values()].reduce((sum, n) => sum + n, 0), active: selected.length === 0 || selected.length === 2 },
+          { value: 'custom', display: '自定义', count: counts.get('custom') ?? 0, active: selected.length === 1 && selected[0] === 'custom' },
+          { value: 'non-custom', display: '非自定义', count: counts.get('non-custom') ?? 0, active: selected.length === 1 && selected[0] === 'non-custom' },
+        ],
+      };
+    }
     if (key === 'videoTypes') {
       const counts = facetValueCounts(allMatches.value, filterStore.filters, 'videoTypes');
       if (filterStore.filters.videoTypes.length === 0 && counts.size <= 1) return null;
     }
     const counts = facetValueCounts(allMatches.value, filterStore.filters, key);
     const entries = [...counts.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      .sort((a, b) => key === 'achievements'
+        ? ['mvp', 'svp', 'other'].indexOf(a[0]) - ['mvp', 'svp', 'other'].indexOf(b[0])
+        : b[1] - a[1] || a[0].localeCompare(b[0]));
     if (entries.length === 0) return null;
     const selectedSet = new Set(filterStore.filters[key]);
     return {
@@ -163,7 +183,8 @@ const sections = computed(() => {
         value: val,
         count,
         active: selectedSet.has(val),
-        display: key === 'results' ? (RESULT_LABELS[val] ?? val)
+        display: key === 'sources' ? (sourceLabels.get(val) ?? '导入设备')
+          : key === 'results' ? (RESULT_LABELS[val] ?? val)
           : key === 'achievements' ? (ACHV_LABELS[val] ?? val)
           : val,
       })),
@@ -176,6 +197,13 @@ const sections = computed(() => {
 });
 
 function onChipClick(key: CategoryKey, value: string) {
+  if (key === 'roomTypes') {
+    const selected = filterStore.filters.roomTypes;
+    const next = value === 'all' || (selected.length === 1 && selected[0] === value)
+      ? [] : [value as FilterState['roomTypes'][number]];
+    filterStore.setFilters({ roomTypes: next });
+    return;
+  }
   const set = new Set(filterStore.filters[key] as string[]);
   if (set.has(value)) set.delete(value);
   else set.add(value);

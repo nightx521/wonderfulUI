@@ -69,6 +69,9 @@ function parseStats(v: unknown): MatchStats {
     deaths: asNumber(o.deaths ?? 0, 'stats.deaths'),
     score: asNumber(o.score ?? 0, 'stats.score'),
     has_won: asBool(o.has_won ?? false, 'stats.has_won'),
+    result_known: o.has_won != null,
+    missing_stats: ['kills', 'deaths', 'assists', 'score'].filter(key => o[key] == null),
+    score_known: o.rounds_won != null && o.rounds_lost != null,
     mode_name: typeof o.mode_name === 'string' ? o.mode_name : '',
     rounds_won: asNumber(o.rounds_won ?? 0, 'stats.rounds_won'),
     rounds_lost: asNumber(o.rounds_lost ?? 0, 'stats.rounds_lost'),
@@ -179,12 +182,13 @@ function buildFromJson(json: string, openid: string): WonderfulDbFile {
   } catch (e) {
     throw new WonderfulDbError(`decrypted plaintext is not valid JSON: ${(e as Error).message}`);
   }
-  if (raw == null || typeof raw !== 'object') {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new WonderfulDbError('decrypted JSON: expected top-level object');
   }
   // The known top-level key is "key_wonderful_list_<openid>" but the file
   // could in theory carry other keys; we just pick the wonderful-list one.
   const expectedKey = `key_wonderful_list_${openid}`;
+  if (Object.keys(raw).length === 0) return { key: expectedKey, matches: [], raw };
   let list = raw[expectedKey];
   if (list == null) {
     // fall back: pick the first key whose value is an array
@@ -278,6 +282,7 @@ export async function parseSnapshotDbBuffer(buf: Uint8Array, openid: string): Pr
   let tag: string | undefined;
   let nickTime = Number.NEGATIVE_INFINITY;
   const achievements: SnapshotAchievement[] = [];
+  const details = new Map<string, { time: number; detail: NonNullable<AccountSnapshot['matchDetails']>[number] }>();
 
   for (const rec of list) {
     if (rec == null || typeof rec !== 'object') continue;
@@ -294,7 +299,31 @@ export async function parseSnapshotDbBuffer(buf: Uint8Array, openid: string): Pr
       if (n) nick = n;
       if (t) tag = t;
     }
-    // MVP/SVP: only collect pure achievement records (ss_type === "match")
+    const matchId = recObj.matches_id;
+    if (typeof matchId === 'string' && matchId) {
+      const achievement = s.ss_achieve_type === 'mvp' || s.ss_achieve_type === 'svp'
+        ? s.ss_achieve_type : s.ss_type === 'match' && s.ss_achieve_type === '' ? 'normal' : undefined;
+      const info = s.ss_type === 'match' && s.ss_result_infos && typeof s.ss_result_infos === 'object'
+        ? s.ss_result_infos as Record<string, unknown> : undefined;
+      const isDraw = snapshotBool(info?.IsDraw);
+      const hasWon = snapshotBool(info?.HasWon);
+      if (achievement || isDraw !== undefined || hasWon !== undefined) {
+        const previous = details.get(matchId);
+        if (!previous || recTime >= previous.time) {
+          details.set(matchId, { time: recTime, detail: {
+            matchesId: matchId,
+            achievement: achievement ?? previous?.detail.achievement,
+            isDraw: isDraw ?? previous?.detail.isDraw,
+            hasWon: hasWon ?? previous?.detail.hasWon,
+          } });
+        } else {
+          previous.detail.achievement ??= achievement;
+          previous.detail.isDraw ??= isDraw;
+          previous.detail.hasWon ??= hasWon;
+        }
+      }
+    }
+    // Preserve the positive-only achievement list for older consumers.
     const achv = typeof s.ss_achieve_type === 'string' ? s.ss_achieve_type : '';
     if (achv !== 'mvp' && achv !== 'svp') continue;
     const mid = (rec as Record<string, unknown>).matches_id;
@@ -307,5 +336,13 @@ export async function parseSnapshotDbBuffer(buf: Uint8Array, openid: string): Pr
   if (nick !== undefined) result.nick = nick;
   if (tag !== undefined) result.tag = tag;
   if (achievements.length) result.achievements = achievements;
+  if (details.size) result.matchDetails = [...details.entries()].sort(([a], [b]) => a.localeCompare(b))
+    .map(([, value]) => value.detail);
   return result;
+}
+
+function snapshotBool(value: unknown): boolean | undefined {
+  if (value === true || value === 1 || value === '1' || value === 'true') return true;
+  if (value === false || value === 0 || value === '0' || value === 'false') return false;
+  return undefined;
 }

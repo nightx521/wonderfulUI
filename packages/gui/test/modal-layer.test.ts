@@ -17,7 +17,7 @@ function rootWith(...open: ModalLayer[]): ParentNode {
 
 describe('modal keyboard ownership', () => {
   test('matches the visual z-order instead of listener registration order', () => {
-    const root = rootWith('event', 'player', 'settings', 'update', 'share');
+    const root = rootWith('event', 'player', 'settings', 'share');
     expect(topModalLayer(root)).toBe('share');
     expect(ownsTopModalLayer('share', root)).toBe(true);
     expect(ownsTopModalLayer('player', root)).toBe(false);

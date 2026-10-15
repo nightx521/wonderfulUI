@@ -18,7 +18,7 @@ describe('library scan feedback', () => {
 
   test('never reports partial results as unconditional success', () => {
     expect(scanCompletionFeedback('incremental', 2)).toEqual({
-      message: '扫描完成，但有 2 个账户或记录读取失败，请全量扫描重试',
+      message: '扫描完成，但有 2 个账户或记录读取失败，请查看账户提示或设置中的日志',
       tone: 'error',
     });
     expect(scanCompletionFeedback('full', Number.NaN).tone).toBe('ok');

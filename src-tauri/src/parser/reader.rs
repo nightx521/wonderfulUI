@@ -17,15 +17,16 @@
 use crate::parser::crypto::{aes_decrypt, derive_key_iv};
 use crate::parser::error::ParseError;
 use crate::parser::hex::decode_hex;
-use crate::parser::model::{MatchRecord, SnapshotAchievement, WonderfulDbFile};
+use crate::parser::model::{
+    MatchRecord, SnapshotAchievement, SnapshotMatchDetail, WonderfulDbFile,
+};
 use std::path::Path;
 
 /// Parse a WonderfulDb file. `openid` is the file name without path
 /// (ACLOS uses the openid as the file name with no extension).
 pub fn parse_wonderful_db(path: &Path, openid: &str) -> Result<WonderfulDbFile, ParseError> {
     let bytes = std::fs::read(path)?;
-    let hex_text = std::str::from_utf8(&bytes)
-        .map_err(|e| ParseError::Crypto(format!("file is not valid UTF-8: {}", e)))?;
+    let hex_text = std::str::from_utf8(&bytes)?;
     let cipher = decode_hex(hex_text)?;
 
     let (key, iv) = derive_key_iv(openid);
@@ -39,12 +40,49 @@ fn parse_json(json_text: &str, openid: &str) -> Result<WonderfulDbFile, ParseErr
     let obj = raw.as_object().ok_or(ParseError::NotAnObject)?;
 
     let expected_key = format!("key_wonderful_list_{}", openid);
+    // ACLOS also writes a valid encrypted empty object before highlights exist.
+    // Other missing/invalid structures remain errors rather than becoming empty libraries.
+    if obj.is_empty() {
+        return Ok(WonderfulDbFile {
+            key: expected_key,
+            matches: Vec::new(),
+            raw: Some(raw),
+        });
+    }
     let list_value = obj
         .get(&expected_key)
         .or_else(|| obj.values().find(|v| v.is_array()))
         .ok_or_else(|| ParseError::NoMatchList(expected_key.clone()))?;
 
-    let matches: Vec<MatchRecord> = serde_json::from_value(list_value.clone())?;
+    let mut matches: Vec<MatchRecord> = serde_json::from_value(list_value.clone())?;
+    if let Some(records) = list_value.as_array() {
+        for (m, record) in matches.iter_mut().zip(records) {
+            m.stats.missing_stats = Some(
+                ["kills", "deaths", "assists", "score"]
+                    .iter()
+                    .filter(|key| {
+                        record
+                            .get("stats")
+                            .and_then(|s| s.get(**key))
+                            .is_none_or(|v| v.is_null())
+                    })
+                    .map(|key| (*key).to_string())
+                    .collect(),
+            );
+            m.stats.result_known = Some(
+                record
+                    .get("stats")
+                    .and_then(|s| s.get("has_won"))
+                    .is_some_and(|v| !v.is_null()),
+            );
+            m.stats.score_known = Some(["rounds_won", "rounds_lost"].iter().all(|key| {
+                record
+                    .get("stats")
+                    .and_then(|s| s.get(key))
+                    .is_some_and(|v| !v.is_null())
+            }));
+        }
+    }
     Ok(WonderfulDbFile {
         key: expected_key,
         matches,
@@ -60,6 +98,7 @@ pub struct SnapshotData {
     pub nick: Option<String>,
     pub tag: Option<String>,
     pub achievements: Vec<SnapshotAchievement>,
+    pub match_details: Vec<SnapshotMatchDetail>,
 }
 
 /// Parse the per-account `snapshot<openid>` file. Same AES scheme as
@@ -123,6 +162,7 @@ pub fn parse_snapshot_db(path: &Path, openid: &str) -> Result<SnapshotData, Pars
     let mut tag: Option<String> = None;
     let mut nick_time: i64 = i64::MIN;
     let mut achievements: Vec<SnapshotAchievement> = Vec::new();
+    let mut match_details = std::collections::BTreeMap::<String, (i64, SnapshotMatchDetail)>::new();
 
     for rec in list {
         let snap = rec.get("snapshot").and_then(|v| v.as_object());
@@ -151,7 +191,45 @@ pub fn parse_snapshot_db(path: &Path, openid: &str) -> Result<SnapshotData, Pars
                 tag = cand_tag;
             }
         }
-        // MVP/SVP: only collect when ss_achieve_type is mvp or svp
+        let mid = rec.get("matches_id").and_then(|v| v.as_str()).unwrap_or("");
+        if !mid.is_empty() {
+            let achv = snap.get("ss_achieve_type").and_then(|v| v.as_str());
+            let is_match = snap.get("ss_type").and_then(|v| v.as_str()) == Some("match");
+            let achievement = match achv {
+                Some("mvp" | "svp") => achv.map(str::to_owned),
+                Some("") if is_match => Some("normal".into()),
+                _ => None,
+            };
+            let result = snap.get("ss_result_infos").filter(|_| is_match);
+            let is_draw = result.and_then(|r| r.get("IsDraw")).and_then(snapshot_bool);
+            let has_won = result.and_then(|r| r.get("HasWon")).and_then(snapshot_bool);
+            if achievement.is_some() || is_draw.is_some() || has_won.is_some() {
+                let entry = match_details.entry(mid.into()).or_default();
+                if rec_time >= entry.0 || entry.1.matches_id.is_empty() {
+                    let previous = &entry.1;
+                    *entry = (
+                        rec_time,
+                        SnapshotMatchDetail {
+                            matches_id: mid.into(),
+                            achievement: achievement.or_else(|| previous.achievement.clone()),
+                            is_draw: is_draw.or(previous.is_draw),
+                            has_won: has_won.or(previous.has_won),
+                        },
+                    );
+                } else {
+                    if entry.1.achievement.is_none() {
+                        entry.1.achievement = achievement;
+                    }
+                    if entry.1.is_draw.is_none() {
+                        entry.1.is_draw = is_draw;
+                    }
+                    if entry.1.has_won.is_none() {
+                        entry.1.has_won = has_won;
+                    }
+                }
+            }
+        }
+        // Keep the existing positive-only achievement shape for older consumers.
         let achv = snap
             .get("ss_achieve_type")
             .and_then(|v| v.as_str())
@@ -179,7 +257,22 @@ pub fn parse_snapshot_db(path: &Path, openid: &str) -> Result<SnapshotData, Pars
         nick,
         tag,
         achievements,
+        match_details: match_details
+            .into_values()
+            .map(|(_, detail)| detail)
+            .collect(),
     })
+}
+
+fn snapshot_bool(value: &serde_json::Value) -> Option<bool> {
+    match value {
+        serde_json::Value::Bool(b) => Some(*b),
+        serde_json::Value::Number(n) if n.as_i64() == Some(0) => Some(false),
+        serde_json::Value::Number(n) if n.as_i64() == Some(1) => Some(true),
+        serde_json::Value::String(s) if s == "0" || s == "false" => Some(false),
+        serde_json::Value::String(s) if s == "1" || s == "true" => Some(true),
+        _ => None,
+    }
 }
 
 // ─── tests ────────────────────────────────────────────────────────────────
@@ -194,6 +287,84 @@ mod tests {
     use super::*;
     use crate::parser::model::VideoItem;
     use std::path::PathBuf;
+
+    #[test]
+    fn only_valid_empty_objects_and_lists_are_empty_highlight_data() {
+        for json in ["{}", r#"{"key_wonderful_list_test":[]}"#] {
+            let parsed = parse_json(json, "test").unwrap();
+            assert!(parsed.matches.is_empty());
+            assert!(parsed.raw.is_some());
+        }
+        for json in [
+            "",
+            "{",
+            "null",
+            "[]",
+            r#"{"other":true}"#,
+            r#"{"key_wonderful_list_test":null}"#,
+        ] {
+            assert!(
+                parse_json(json, "test").is_err(),
+                "invalid input accepted: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_result_and_score_presence_survive_default_values() {
+        let parsed = parse_json(r#"{"key_wonderful_list_test":[{"stats":{}},{"stats":{"has_won":false,"rounds_won":0,"rounds_lost":0}},{"stats":{"has_won":true,"rounds_won":13}}]}"#, "test").unwrap();
+        let flags: Vec<_> = parsed
+            .matches
+            .iter()
+            .map(|m| (m.stats.result_known, m.stats.score_known))
+            .collect();
+        assert_eq!(
+            flags,
+            vec![
+                (Some(false), Some(false)),
+                (Some(true), Some(true)),
+                (Some(true), Some(false))
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_stats_are_distinct_from_explicit_zero() {
+        let parsed = parse_json(r#"{"key_wonderful_list_test":[{"stats":{"kills":0,"deaths":0,"assists":0,"score":0}},{"stats":{"kills":0}}]}"#, "test").unwrap();
+        assert_eq!(parsed.matches[0].stats.missing_stats, Some(vec![]));
+        assert_eq!(
+            parsed.matches[1].stats.missing_stats,
+            Some(vec!["deaths".into(), "assists".into(), "score".into()])
+        );
+    }
+
+    #[test]
+    fn snapshot_metadata_uses_latest_known_facts_in_any_order() {
+        use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+        let value = serde_json::json!({"key_snapshot_list123": [
+            {"matches_id":"award","matches_time":2,"snapshot":{"ss_type":"match","ss_achieve_type":"svp"}},
+            {"matches_id":"award","matches_time":1,"snapshot":{"ss_type":"match","ss_achieve_type":"mvp","ss_result_infos":{"HasWon":"0"}}},
+            {"matches_id":"unknown","snapshot":{"ss_type":"match","ss_result_infos":{"IsDraw":2,"HasWon":"unknown"}}}
+        ]});
+        let text = serde_json::to_vec(&value).unwrap();
+        let (key, iv) = derive_key_iv("123");
+        let mut buf = vec![0; text.len() + 16];
+        buf[..text.len()].copy_from_slice(&text);
+        let cipher = cbc::Encryptor::<aes::Aes256>::new_from_slices(&key, &iv)
+            .unwrap()
+            .encrypt_padded_mut::<Pkcs7>(&mut buf, text.len())
+            .unwrap();
+        let path =
+            std::env::temp_dir().join(format!("wui-snapshot-facts-{}", uuid::Uuid::new_v4()));
+        let bytes = hex::encode(cipher).into_bytes();
+        std::fs::write(&path, &bytes).unwrap();
+        let parsed = parse_snapshot_db(&path, "123").unwrap();
+        assert_eq!(parsed.match_details.len(), 1);
+        assert_eq!(parsed.match_details[0].achievement.as_deref(), Some("svp"));
+        assert_eq!(parsed.match_details[0].has_won, Some(false));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_file(&path).unwrap();
+    }
 
     fn fixture_dir() -> PathBuf {
         if let Ok(dir) = std::env::var("WONDERFUL_DB_DIR") {
@@ -250,6 +421,57 @@ mod tests {
             "",
         ),
     ];
+
+    #[test]
+    fn null_round_honors_do_not_reject_the_account() {
+        let payload = serde_json::json!({
+            "key_wonderful_list_test": [{
+                "matches_id": "match-with-null-honors",
+                "videos": [{
+                    "video_id": "video-1",
+                    "rounds": [
+                        { "round_id": 1, "round_honors": null,
+                          "round_clips": [{ "clip_id": "clip-1" }] },
+                        { "round_id": 2, "round_honors": [] },
+                        { "round_id": 3 },
+                        { "round_id": 4, "round_honors": [{
+                            "honor_id": "honor-1", "honor_name": "Triple kill"
+                        }] }
+                    ]
+                }]
+            }, {
+                "matches_id": "another-match",
+                "videos": [{ "video_id": "video-2" }]
+            }]
+        });
+        let result = parse_json(&payload.to_string(), "test").unwrap();
+        assert_eq!(result.matches.len(), 2);
+        let rounds = &result.matches[0].videos[0].rounds;
+        assert_eq!(rounds.len(), 4);
+        assert!(rounds[..3]
+            .iter()
+            .all(|round| round.round_honors.is_empty()));
+        assert_eq!(rounds[0].round_clips[0].clip_id, "clip-1");
+        assert_eq!(rounds[3].round_honors[0].honor_id, "honor-1");
+        assert_eq!(result.matches[1].videos[0].video_id, "video-2");
+        assert!(
+            result.raw.unwrap()["key_wonderful_list_test"][0]["videos"][0]["rounds"][0]
+                ["round_honors"]
+                .is_null()
+        );
+    }
+
+    #[test]
+    fn invalid_round_honors_still_report_an_error() {
+        for honors in [serde_json::json!("invalid"), serde_json::json!({})] {
+            let payload = serde_json::json!({
+                "key_wonderful_list_test": [{
+                    "videos": [{ "rounds": [{ "round_honors": honors }] }]
+                }]
+            });
+            assert!(parse_json(&payload.to_string(), "test").is_err());
+        }
+    }
 
     #[test]
     fn hex_decode_roundtrip_and_errors() {

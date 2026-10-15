@@ -1,5 +1,6 @@
 import type { MatchRecord } from '@wonderful-ui/parser';
 import Fuse from 'fuse.js';
+import { resolveMatchAgentLabel, resolveMatchMapLabel } from './valorant-assets.ts';
 import {
   createTable,
   getCoreRowModel,
@@ -54,10 +55,10 @@ function getFuse(matches: MatchRecord[]): Fuse<MatchRecord> {
   if (fuseMatches === matches && fuseCache) return fuseCache;
   fuseCache = new Fuse(matches, {
     keys: [
-      { name: 'cnHero', getFn: (m: MatchRecord) => (m.career?.hero_name as string) || m.agent.agent_name },
+      { name: 'cnHero', getFn: resolveMatchAgentLabel },
       { name: 'enHero', getFn: (m: MatchRecord) => m.agent.agent_name },
-      { name: 'cnMap', getFn: (m: MatchRecord) => (m.career?.map_name as string) || '' },
-      { name: 'cnMode', getFn: (m: MatchRecord) => (m.career?.game_mode as string) || '' },
+      { name: 'cnMap', getFn: resolveMatchMapLabel },
+      { name: 'cnMode', getFn: (m: MatchRecord) => CATEGORY_GETTERS.modes(m)[0] ?? '' },
       { name: 'id', weight: 3, getFn: (m: MatchRecord) => m.matches_id },
       { name: 'videoName', getFn: (m: MatchRecord) => m.videos.map(v => v.video_name).join(' ') },
       { name: 'mapId', weight: 0.5, getFn: (m: MatchRecord) => m.map.map_id },
@@ -74,8 +75,8 @@ function getFuse(matches: MatchRecord[]): Fuse<MatchRecord> {
 function matchesForQuery(matches: MatchRecord[], query: string): MatchRecord[] {
   const q = query.trim();
   if (!q) return matches;
-  const ids = new Set(getFuse(matches).search(q).map(r => r.item.matches_id));
-  return matches.filter(m => ids.has(m.matches_id));
+  const found = new Set(getFuse(matches).search(q).map(result => result.item));
+  return matches.filter(match => found.has(match));
 }
 
 function columnFiltersFromState(filters: FilterState): ColumnFiltersState {
@@ -111,10 +112,13 @@ function valueCounts(matches: MatchRecord[], key: CategoryKey): Map<string, numb
   const counts = new Map<string, number>();
   const getter = CATEGORY_GETTERS[key];
   for (const m of matches) {
-    const display = getter(m)[0]!;
-    if (!display) continue;
-    if (/^\d+$/.test(display)) continue;
-    counts.set(display, (counts.get(display) ?? 0) + 1);
+    // A match can contain montages and several kinds of moments. Count each
+    // video type once per match; hero/map/mode getters also carry lookup aliases.
+    const displays = key === 'videoTypes' || key === 'sources' ? new Set(getter(m)) : [getter(m)[0]];
+    for (const display of displays) {
+      if (!display || /^\d+$/.test(display)) continue;
+      counts.set(display, (counts.get(display) ?? 0) + 1);
+    }
   }
   return counts;
 }

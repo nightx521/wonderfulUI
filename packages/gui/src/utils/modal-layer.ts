@@ -1,7 +1,6 @@
 /** Visual modal stack, highest z-index first. Keep aligned with component CSS. */
 export const MODAL_LAYER_ORDER = [
   'share',
-  'update',
   'settings',
   'player',
   'event',
@@ -11,7 +10,6 @@ export type ModalLayer = typeof MODAL_LAYER_ORDER[number];
 
 export const MODAL_LAYER_SELECTOR: Record<ModalLayer, string> = {
   share: '.share-modal-backdrop',
-  update: '.update-modal-backdrop',
   settings: '.settings-modal-backdrop',
   player: '.player-backdrop',
   event: '.event-list-modal-backdrop',

@@ -54,6 +54,7 @@
     >
       <!-- Library tab -->
       <template v-if="settings.activeTab === 'library'">
+        <HistoryImport />
         <!-- Video Overview -->
         <section class="settings-section">
           <div class="settings-section-head">
@@ -252,12 +253,13 @@
           <img class="settings-about-logo" :src="brandLogoUrl" alt="" aria-hidden="true" width="72" height="72" />
           <h3 class="settings-about-name">WonderfulUI</h3>
           <span class="settings-about-version">v{{ APP_VERSION }}</span>
-          <span class="settings-about-copy">&copy; 2026 WizisCool</span>
+          <span class="settings-about-copy">原作者 &copy; 2026 WizisCool</span>
+          <span class="settings-about-copy">二次开发 &copy; 2026 murainy</span>
           <div class="settings-about-links">
             <button
               class="settings-about-link"
               type="button"
-              @click="openExternal('https://github.com/WizisCool/WonderfulUI')"
+              @click="openExternal('https://github.com/nightx521/wonderfulUI')"
             >
               <WIcon icon="ph:github-logo" :size="14" />
               <span>GitHub</span>
@@ -271,18 +273,6 @@
               <span>GPL-3.0-or-later</span>
             </button>
           </div>
-          <div class="settings-about-update">
-            <button
-              class="btn settings-action"
-              type="button"
-              :disabled="isUpdateBusy"
-              :aria-busy="isUpdateBusy"
-              @click="onCheckUpdate"
-            >
-              <WIcon icon="ph:arrows-clockwise" :size="14" />
-              <span>{{ updateActionLabel }}</span>
-            </button>
-          </div>
         </div>
       </template>
     </main>
@@ -293,11 +283,11 @@
 import { computed, ref, watch, onMounted, nextTick } from 'vue';
 import WIcon from '../common/WIcon.vue';
 import AccountShareChart from './AccountShareChart.vue';
+import HistoryImport from './HistoryImport.vue';
 import { useAccountStore } from '../../stores/account.ts';
 import { useFilterStore } from '../../stores/filter.ts';
 import { useSettingsStore } from '../../stores/settings.ts';
 import { useUiStore } from '../../stores/ui.ts';
-import { useUpdateStore } from '../../stores/update.ts';
 import { invoke } from '../../tauri-adapter.ts';
 import { clientLog } from '../../utils/client-log.ts';
 import { SCAN_FAILURE_MESSAGE, scanCompletionFeedback } from '../../utils/scan-feedback.ts';
@@ -309,7 +299,6 @@ const account = useAccountStore();
 const filter = useFilterStore();
 const settings = useSettingsStore();
 const ui = useUiStore();
-const update = useUpdateStore();
 
 const brandLogoUrl = new URL('../../assets/logo.svg', import.meta.url).href;
 
@@ -377,27 +366,6 @@ const logPreviewText = computed(() => {
 
 const logPreviewRef = ref<HTMLPreElement | null>(null);
 
-// 关于页「检查更新」按钮
-const isUpdateBusy = computed(() =>
-  update.status === 'checking' ||
-  update.status === 'downloading' ||
-  update.status === 'installing'
-);
-const updateActionLabel = computed(() => {
-  if (update.status === 'checking') return '检查中…';
-  if (update.badge && update.update) {
-    return `有新版本 v${update.update.version} →`;
-  }
-  if (update.status === 'uptodate') return '已是最新版本';
-  return '检查更新';
-});
-function onCheckUpdate() {
-  if (update.badge && update.update) {
-    update.openModal();
-    return;
-  }
-  void update.checkForUpdate(false);
-}
 
 watch(logPreviewText, () => {
   nextTick(() => {
@@ -647,11 +615,6 @@ watch(() => settings.activeTab, (tab) => {
   margin-right: 2px;
   color: var(--ink-4);
   pointer-events: none;
-}
-.settings-about-update {
-  display: flex;
-  justify-content: center;
-  margin-top: 18px;
 }
 .settings-sub-line {
   display: inline-flex; align-items: center; gap: 4px;

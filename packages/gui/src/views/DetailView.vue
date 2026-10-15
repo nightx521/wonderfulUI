@@ -13,7 +13,9 @@
             decoding="async"
             @error="heroFailed = true"
           />
-          <div v-else class="hero-placeholder" :style="{ '--hue': heroHue }">{{ agentInitial }}</div>
+          <div v-else class="hero-placeholder" :style="{ '--hue': heroHue }">
+            {{ agentInitial }}
+          </div>
         </div>
         <div class="detail-header-meta">
           <div class="detail-agent-row">
@@ -22,6 +24,7 @@
               class="match-result-pill is-detail"
               :class="resultClass"
               :aria-label="resultAriaLabel"
+              :data-tip="resultAriaLabel"
             >{{ resultText }} {{ matchScore }}</span>
           </div>
           <div class="detail-sub">
@@ -40,20 +43,20 @@
       </div>
 
       <!-- stats: 3x2 card grid -->
-      <div class="detail-stats-row">
+      <div class="detail-stats-row" :data-tip="statsHint || undefined">
         <div class="stat-cell is-win">
           <div class="stat-icon"><WIcon icon="ph:crosshair" :size="14" /></div>
-          <div class="stat-value">{{ match.stats.kills }}</div>
+          <div class="stat-value">{{ statText(match, 'kills') }}</div>
           <div class="stat-label">击杀</div>
         </div>
         <div class="stat-cell is-loss">
           <div class="stat-icon"><WIcon icon="ph:skull" :size="14" /></div>
-          <div class="stat-value">{{ match.stats.deaths }}</div>
+          <div class="stat-value">{{ statText(match, 'deaths') }}</div>
           <div class="stat-label">死亡</div>
         </div>
         <div class="stat-cell is-assist">
           <div class="stat-icon"><WIcon icon="ph:hand-heart" :size="14" /></div>
-          <div class="stat-value">{{ match.stats.assists }}</div>
+          <div class="stat-value">{{ statText(match, 'assists') }}</div>
           <div class="stat-label">助攻</div>
         </div>
         <div class="stat-row2">
@@ -64,7 +67,7 @@
           </div>
           <div class="stat-cell">
             <div class="stat-icon"><WIcon icon="ph:star" :size="14" /></div>
-            <div class="stat-value">{{ match.stats.score }}</div>
+            <div class="stat-value">{{ statText(match, 'score') }}</div>
             <div class="stat-label">得分</div>
           </div>
           <button
@@ -125,6 +128,7 @@
             </div>
             <button
               class="btn btn-play"
+              :disabled="!v.video_src"
               :aria-label="'播放 ' + v.video_name"
               @click="playVideo(v)"
             >
@@ -177,6 +181,7 @@
               </div>
               <button
                 class="btn btn-play"
+                :disabled="!v.video_src"
                 :aria-label="'播放 ' + v.video_name"
                 @click="playVideo(v)"
               >
@@ -241,6 +246,8 @@ import { useAccountStore } from '../stores/account.ts';
 import { useDetailStore } from '../stores/detail.ts';
 import { usePlayerStore } from '../stores/player.ts';
 import { useUiStore } from '../stores/ui.ts';
+import { resolveMatchResult } from '../utils/match-result.ts';
+import { statText, hasKdaStats, statsNote } from '../utils/match-stats.ts';
 import { placeMenuNearCursor } from '../utils/context-menu.ts';
 import {
   broadcastCloseContextMenus,
@@ -270,11 +277,13 @@ const MOMENT_TYPE_ORDER_REF = ['三杀时刻', '四杀时刻', '五杀时刻', '
 const match = computed(() => detail.selectedMatch);
 const agentName = computed(() => match.value ? agentCn(match.value) : '');
 const agentInitial = computed(() => agentName.value[0]?.toUpperCase() ?? '?');
+const statsHint = computed(() => match.value ? statsNote(match.value) : '');
 const matchScore = computed(() => match.value ? fmtScore(match.value) : '');
-const resultText = computed(() => match.value?.stats.has_won ? '胜' : '败');
-const resultClass = computed(() => match.value?.stats.has_won ? 'result-win' : 'result-loss');
+const result = computed(() => match.value ? resolveMatchResult(match.value) : null);
+const resultText = computed(() => result.value?.label ?? '—');
+const resultClass = computed(() => result.value?.className ?? 'result-unknown');
 const resultAriaLabel = computed(() =>
-  match.value ? (match.value.stats.has_won ? `胜利 ${matchScore.value}` : `失败 ${matchScore.value}`) : ''
+  result.value?.ariaLabel ?? ''
 );
 const detailSubText = computed(() => {
   if (!match.value) return '';
@@ -284,9 +293,9 @@ const detailSubText = computed(() => {
   return [mode ? `${mode} · ${map}` : map, dur].filter(Boolean).join(' · ');
 });
 
-const kdaRatioText = computed(() => match.value ? kdaRatio(match.value) : '0.00');
+const kdaRatioText = computed(() => match.value && hasKdaStats(match.value) ? kdaRatio(match.value) : '—');
 const kdaToneClass = computed(() => {
-  if (!match.value) return '';
+  if (!match.value || !hasKdaStats(match.value)) return '';
   const v = (match.value.stats.kills + match.value.stats.assists) / Math.max(match.value.stats.deaths, 1);
   if (v >= 1.5) return 'is-win';
   if (v <= 0.8) return 'is-loss';
@@ -400,6 +409,7 @@ function qualityBadge(v: VideoItem): string {
 }
 
 function fmtVideoMeta(v: VideoItem): string {
+  if (!v.video_src) return '视频未找到 · 可重新导入匹配';
   const parts: string[] = [fmtDuration(v.video_duration)];
   if (v.video_size) parts.push(fmtSize(v.video_size));
   return parts.join(' · ');
@@ -410,7 +420,7 @@ function videoPosterFailed(id: string): boolean { return videoPosterErrors.value
 function onVideoPosterError(id: string) { videoPosterErrors.value.add(id); }
 
 function playVideo(v: VideoItem) {
-  if (!match.value) return;
+  if (!match.value || !v.video_src) return;
   player.open(v, match.value);
 }
 

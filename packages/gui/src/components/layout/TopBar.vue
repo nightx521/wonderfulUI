@@ -72,8 +72,9 @@ onUnmounted(() => {
   min-width: 0;
 }
 .topbar > * { min-width: 0; }
-.topbar-center { padding: 0 24px; }
+.topbar-center { padding: 0 24px; display: flex; align-items: center; }
 .search {
+  min-width: 0;
   width: 100%;
   max-width: 480px;
   background: var(--bg);

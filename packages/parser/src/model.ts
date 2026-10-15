@@ -25,6 +25,11 @@ export interface MatchStats {
   deaths: number;
   score: number;
   has_won: boolean;
+  /** Whether has_won was present in source data rather than a parser default. */
+  result_known?: boolean;
+  score_known?: boolean;
+  /** Fields absent in the source; explicit zero values remain zero. */
+  missing_stats?: string[];
   mode_name: string;          // internal path
   rounds_won: number;
   rounds_lost: number;
@@ -82,6 +87,12 @@ export interface RoundItem {
 }
 
 export interface MatchRecord {
+  /** ACLOS's explicit primary-record tier codes; absence is distinct from unranked (0). */
+  tier?: { tier_before?: unknown; tier_after?: unknown } | null;
+  /** WonderfulUI-owned facts attached from the account snapshot after loading. */
+  library_metadata?: Omit<SnapshotMatchDetail, 'matchesId'>;
+  /** WonderfulUI provenance; one logical match can belong to several sources. */
+  library_sources?: { id: string; label: string }[];
   matches_id: string;
   matches_time: number;       // unix ms
   map: MatchMap;
@@ -151,4 +162,12 @@ export interface AccountSnapshot {
   tag?: string;
   /** Per-match MVP/SVP achievements. Undefined when no records are present. */
   achievements?: SnapshotAchievement[];
+  matchDetails?: SnapshotMatchDetail[];
+}
+
+export interface SnapshotMatchDetail {
+  matchesId: string;
+  achievement?: 'mvp' | 'svp' | 'normal';
+  isDraw?: boolean;
+  hasWon?: boolean;
 }

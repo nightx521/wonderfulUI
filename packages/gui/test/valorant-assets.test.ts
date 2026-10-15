@@ -13,6 +13,7 @@ import {
   resolveMatchAgentLabel,
   resolveMatchAssetUrl,
   resolveMatchMapLabel,
+  resolveMatchModeLabel,
 } from '../src/utils/valorant-assets.ts';
 
 function match(overrides: Partial<MatchRecord> = {}): MatchRecord {
@@ -76,6 +77,37 @@ describe('generated Valorant metadata', () => {
 });
 
 describe('canonical match resolution', () => {
+  test('resolves the hybrid robot identity and bundled portrait by name and UUID', () => {
+    const robot = lookupAgentAsset('AbilityDraftAgent');
+    expect(robot?.uuid).toBe('773f0c78-4486-752b-68ef-4585d7f4b848');
+    expect(robot?.uuid).not.toBe(lookupAgentAsset('KAY/O')?.uuid);
+    expect(robot?.cn).toBe('轮战机器人');
+    for (const agent of [
+      { agent_name: 'AbilityDraftAgent', agent_id: '' },
+      { agent_name: '', agent_id: robot!.uuid },
+    ]) {
+      const value = match({ agent, career: { hero_image: 'https://example.com/stale.png' } });
+      expect(resolveMatchAgentLabel(value)).toBe('轮战机器人');
+      expect(resolveMatchAssetUrl(value, 'hero_image')).toBe(robot?.image);
+      expect(collectMatchAssetEntries([value])).toEqual([]);
+    }
+  });
+
+  test('resolves Gauntlet from ACLOS tokens, game paths and names', () => {
+    for (const value of [
+      match({ mode: 'abilitydraftarena' }),
+      match({ stats: { ...match().stats, mode_name: '/Game/GameModes/AbilityDraftArena/AbilityDraftArenaGameMode.AbilityDraftArenaGameMode_C' } }),
+      match({ career: { game_mode: 'Gauntlet: Glitched' } }),
+      match({ career: { game_mode: '异变轮战' } }),
+    ]) {
+      expect(resolveMatchModeLabel(value)).toBe('异变轮战');
+      expect(lookupGameModeAsset(value)?.uuid).toBe('106cc7b7-444a-14e5-4ac6-5eadb9864b67');
+      expect(resolveMatchAssetUrl(value, 'game_mode_icon')).toMatch(/^\/valorant\/gamemodes\//);
+    }
+    expect(resolveMatchModeLabel(match({ career: { game_mode: '竞技模式' } }))).toBe('竞技模式');
+    expect(resolveMatchModeLabel(match({ mode: 'unknown-mode' }))).toBe('');
+  });
+
   test('known identities override stale or mismatched ACLOS display fields', () => {
     const value = match({
       agent: {

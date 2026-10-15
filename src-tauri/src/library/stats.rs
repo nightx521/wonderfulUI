@@ -186,7 +186,7 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats, String> {
         jobs
     };
 
-    Ok(LibraryStats {
+    let mut result = LibraryStats {
         source_bytes,
         library_db_bytes,
         asset_cache_bytes,
@@ -199,7 +199,63 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats, String> {
         accounts,
         recent_scans,
         asset_kinds,
-    })
+    };
+    let imported: i64 = conn
+        .query_row("SELECT COUNT(*) FROM history_devices", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if imported > 0 {
+        let view = db::load_library_view(conn, "").map_err(|e| e.to_string())?;
+        result.source_bytes += conn
+            .query_row(
+                "SELECT COALESCE(SUM(source_bytes),0) FROM history_devices",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(|e| e.to_string())?;
+        result.total_accounts = view.accounts.len() as i64;
+        result.total_videos = 0;
+        result.videos_bytes = 0;
+        result.missing_videos = 0;
+        result.missing_videos_bytes = 0;
+        let native = result.accounts;
+        result.accounts = view
+            .accounts
+            .iter()
+            .map(|a| {
+                let old = native.iter().find(|n| n.openid == a.openid);
+                let video_count = view
+                    .matches
+                    .iter()
+                    .filter(|m| m.open_id == a.openid)
+                    .map(|m| m.videos.len())
+                    .sum::<usize>();
+                AccountStat {
+                    openid: a.openid.clone(),
+                    label: a
+                        .custom_name
+                        .clone()
+                        .or(a.nick.clone())
+                        .or(a.tag.clone())
+                        .unwrap_or(a.openid.clone()),
+                    match_count: a.match_count as i64,
+                    video_count: video_count as i64,
+                    source_bytes: old.map(|n| n.source_bytes).unwrap_or(0),
+                    source_path: old.map(|n| n.source_path.clone()).unwrap_or_default(),
+                    parse_error: a.error.clone(),
+                }
+            })
+            .collect();
+        for v in view.matches.iter().flat_map(|m| &m.videos) {
+            result.total_videos += 1;
+            if Path::new(&v.video_src).is_file() {
+                result.videos_bytes += v.video_size.max(0);
+            } else {
+                result.missing_videos += 1;
+                result.missing_videos_bytes += v.video_size.max(0);
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn walk_asset_cache(base: &Path) -> Result<Vec<AssetKindStat>, String> {

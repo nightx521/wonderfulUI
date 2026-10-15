@@ -170,6 +170,31 @@ describe('HomeView', () => {
     expect(ui.toastMessage).not.toContain('private backend path');
     wrapper.unmount();
   });
+
+  test('explains empty highlight data without a failure or recovery button', async () => {
+    const { wrapper } = await mountHome([], 'empty', {
+      accounts: [{ openid: 'empty', path: '', matchCount: 0, nick: '示例账户' }],
+      totalErrors: 0,
+    });
+    expect(wrapper.get('.empty-title').text()).toBe('暂无本机高光');
+    expect(wrapper.get('.empty-sub').text()).toContain('生成高光后刷新');
+    expect(wrapper.find('.empty.error').exists()).toBe(false);
+    expect(wrapper.find('.library-error-banner').exists()).toBe(false);
+    expect(wrapper.find('.empty button').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  test('shows a classified cause while keeping private raw errors out of the view', async () => {
+    const { wrapper } = await mountHome([], 'broken', {
+      accounts: [{ openid: 'broken', path: '', matchCount: 0,
+        error: 'parse D:\\private\\broken: field mismatch', errorCode: 'unsupported_format' }],
+      totalErrors: 1,
+    });
+    expect(wrapper.get('.empty-title').text()).toBe('账户数据格式暂不兼容');
+    expect(wrapper.get('.empty-sub').text()).toContain('数据结构变化');
+    expect(wrapper.text()).not.toContain('D:\\private');
+    wrapper.unmount();
+  });
 });
 
 describe('HomeView listbox a11y', () => {

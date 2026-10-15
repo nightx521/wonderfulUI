@@ -22,8 +22,8 @@
         :video="video"
         :match="match"
         @seek="(pct) => $emit('seek', pct)"
-        @seek-start="$emit('seekStart')"
-        @seek-end="$emit('seekEnd')"
+        @seek-start="onProgressSeekStart"
+        @seek-end="onProgressSeekEnd"
         @marker-click="onMarkerClick"
       />
 
@@ -187,9 +187,20 @@ function show() {
   if (hideTimer) clearTimeout(hideTimer);
   if (controlsEl.value) controlsEl.value.classList.remove('is-hidden');
 }
+let progressDragging = false;
+function onProgressSeekStart() {
+  progressDragging = true;
+  show();
+  emit('seekStart');
+}
+function onProgressSeekEnd() {
+  progressDragging = false;
+  emit('seekEnd');
+  scheduleHide();
+}
 function scheduleHide() {
   if (hideTimer) clearTimeout(hideTimer);
-  if (!props.playing) return;
+  if (!props.playing || progressDragging) return;
   hideTimer = setTimeout(() => {
     if (controlsEl.value) controlsEl.value.classList.add('is-hidden');
   }, 3000);

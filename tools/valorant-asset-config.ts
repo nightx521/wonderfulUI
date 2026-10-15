@@ -1,4 +1,4 @@
-export type ValorantAssetKind = 'agents' | 'maps' | 'gamemodes';
+export type ValorantAssetKind = 'agents' | 'maps' | 'gamemodes' | 'ranks';
 
 export interface ValorantAssetSpec {
   width: number;
@@ -16,10 +16,16 @@ export const VALORANT_ASSET_PIPELINE_VERSION = 'v1';
 
 /**
  * Runtime display sizes are 88x72 for map covers, up to 52x52 for agents and
- * 16x16 for mode icons. These 1:1 / 16:9 outputs retain generous HiDPI headroom
+ * 16x16 for mode/rank icons. These 1:1 / 16:9 outputs retain generous HiDPI headroom
  * without shipping the 1024-3840 px maintenance sources in the installer.
  */
 export const VALORANT_ASSET_SPECS: Readonly<Record<ValorantAssetKind, ValorantAssetSpec>> = {
+  ranks: {
+    width: 128,
+    height: 128,
+    quality: 90,
+    maxOutputBytes: 64 * 1024,
+  },
   agents: {
     width: 256,
     height: 256,

@@ -29,11 +29,16 @@ pub fn run() {
         // 任何 Tauri command 一旦尝试 state::<ShareServerState>()
         // 就会 panic "state() called before manage()"。
         .manage(share_server::ShareServerState::new())
+        .manage(library::history::ImportState::default())
         .invoke_handler(tauri::generate_handler![
             scan_shell,
             scan_all,
             scrape_library,
             load_library,
+            select_import_directory,
+            preview_history_import,
+            commit_history_import,
+            cancel_history_import,
             get_match_rounds,
             save_account_order,
             rename_account,
@@ -54,12 +59,6 @@ pub fn run() {
             capture_video_frame,
         ]);
 
-    #[cfg(feature = "updater")]
-    let app = app.plugin(tauri_plugin_updater::Builder::new().build());
-
-    #[cfg(feature = "process")]
-    let app = app.plugin(tauri_plugin_process::init());
-
     // Screenshot save: native Save As + write user-chosen path.
     let app = app
         .plugin(tauri_plugin_dialog::init())
@@ -69,6 +68,75 @@ pub fn run() {
 
     app.run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+async fn select_import_directory(
+    app: tauri::AppHandle,
+    kind: String,
+) -> Result<Option<library::history::Selection>, String> {
+    library::history::validate_kind(&kind)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        let title = if kind == "database" {
+            "选择旧电脑 WonderfulDb 文件夹"
+        } else {
+            "选择视频在当前电脑的文件夹"
+        };
+        let Some(selected) = app.dialog().file().set_title(title).blocking_pick_folder() else {
+            return Ok(None);
+        };
+        let path = selected.into_path().map_err(|_| "所选目录不是本地路径")?;
+        app.state::<library::history::ImportState>()
+            .select(kind, path)
+            .map(Some)
+    })
+    .await
+    .map_err(|_| "目录选择失败".to_string())?
+}
+
+#[tauri::command]
+async fn preview_history_import(
+    app: tauri::AppHandle,
+    database_token: String,
+    video_token: String,
+    device_name: String,
+) -> Result<library::history::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = library::db::open_library()?;
+        app.state::<library::history::ImportState>().preview(
+            &database_token,
+            &video_token,
+            &device_name,
+            &conn,
+        )
+    })
+    .await
+    .map_err(|_| "预览失败".to_string())?
+}
+
+#[tauri::command]
+async fn commit_history_import(
+    app: tauri::AppHandle,
+    token: String,
+) -> Result<library::history::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = library::db::open_library()?;
+        let result = app
+            .state::<library::history::ImportState>()
+            .commit(&token, &conn)?;
+        if let Ok(view) = library::db::load_library_view(&conn, "") {
+            allow_load_result_assets(&app, &view);
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|_| "导入失败".to_string())?
+}
+
+#[tauri::command]
+fn cancel_history_import(state: tauri::State<'_, library::history::ImportState>) {
+    state.cancel();
 }
 
 fn wonderful_dir_from_home(home: Option<PathBuf>) -> Result<PathBuf, String> {
@@ -165,8 +233,12 @@ fn load_after_startup_scrape(
         Ok(summary) => library::db::load_library_view(conn, dir)
             .map(|view| StartupLoadOutcome {
                 view,
-                warning: (summary.errors_seen > 0)
-                    .then(|| format!("{} 个账户读取失败，请执行全量扫描重试", summary.errors_seen)),
+                warning: (summary.errors_seen > 0).then(|| {
+                    format!(
+                        "{} 个账户读取失败，请查看账户提示或设置中的日志",
+                        summary.errors_seen
+                    )
+                }),
             })
             .map_err(|e| format!("load library: {}", e)),
         Err(scrape_error) => {
@@ -1152,7 +1224,7 @@ mod tests {
         assert_eq!(outcome.view.accounts.len(), 1);
         assert_eq!(outcome.view.total_errors, 1);
         assert!(outcome.warning.as_deref().is_some_and(|warning| {
-            warning.contains("1 个账户读取失败") && warning.contains("全量扫描")
+            warning.contains("1 个账户读取失败") && warning.contains("设置中的日志")
         }));
         std::fs::remove_dir_all(&dir).expect("temp dir removed");
     }

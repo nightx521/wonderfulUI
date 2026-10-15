@@ -59,6 +59,59 @@ describe('snapshot parser tolerance', () => {
   });
 });
 
+describe('encrypted empty highlight data', () => {
+  async function encrypt(json: string): Promise<Uint8Array> {
+    const { key, iv } = await deriveKeyIv('123');
+    const { createCipheriv } = await import('node:crypto');
+    const cipher = createCipheriv('aes-256-cbc', key, iv);
+    const hex = Buffer.concat([cipher.update(json, 'utf8'), cipher.final()]).toString('hex');
+    return new TextEncoder().encode(hex);
+  }
+
+  test('accepts an encrypted empty object or explicit empty list', async () => {
+    for (const json of ['{}', '{"key_wonderful_list_123":[]}']) {
+      const result = await parseWonderfulDbBuffer(await encrypt(json), '123');
+      expect(result.matches).toEqual([]);
+      expect(result.raw).toEqual(JSON.parse(json));
+    }
+  });
+
+  test('preserves the presence of source results and complete scores', async () => {
+    const payload = { key_wonderful_list_123: [
+      { stats: {} }, { stats: { has_won: false, rounds_won: 0, rounds_lost: 0 } },
+      { stats: { has_won: true, rounds_won: 13 } },
+    ] };
+    const result = await parseWonderfulDbBuffer(await encrypt(JSON.stringify(payload)), '123');
+    expect(result.matches.map(m => [m.stats.result_known, m.stats.score_known])).toEqual([[false, false], [true, true], [true, false]]);
+    expect(result.matches[0]!.stats.missing_stats).toEqual(['kills', 'deaths', 'assists', 'score']);
+  });
+
+  test('match snapshots distinguish normal from missing awards and parse strict result flags', async () => {
+    const record = (id: string, snapshot: object, time = 1) => ({ matches_id: id, matches_time: time, snapshot });
+    const payload = { key_snapshot_list123: [
+      record('normal', { ss_type: 'match', ss_achieve_type: '', ss_result_infos: { IsDraw: '1', HasWon: 0 } }),
+      record('missing', { ss_type: 'match', ss_result_infos: { IsDraw: 2, HasWon: 'unknown' } }),
+      record('clip', { ss_type: 'video', ss_achieve_type: '', ss_result_infos: { HasWon: true } }),
+      record('award', { ss_type: 'match', ss_achieve_type: 'mvp', ss_result_infos: { HasWon: false } }, 1),
+      record('award', { ss_type: 'match', ss_achieve_type: 'svp' }, 2),
+      record('award', { ss_type: 'match', ss_achieve_type: 'mvp' }, 0),
+    ] };
+    for (const records of [payload.key_snapshot_list123, [...payload.key_snapshot_list123].reverse()]) {
+      const result = await parseSnapshotDbBuffer(await encrypt(JSON.stringify({ key_snapshot_list123: records })), '123');
+      expect(result.matchDetails).toHaveLength(2);
+      expect(result.matchDetails?.find(m => m.matchesId === 'normal')).toMatchObject({ achievement: 'normal', isDraw: true, hasWon: false });
+      expect(result.matchDetails?.find(m => m.matchesId === 'award')).toMatchObject({ achievement: 'svp', hasWon: false });
+    }
+  });
+
+  test('rejects incomplete, non-object and non-empty incompatible data', async () => {
+    for (const json of ['', '{', 'null', '[]', '{"other":true}', '{"key_wonderful_list_123":null}']) {
+      await expect(parseWonderfulDbBuffer(await encrypt(json), '123')).rejects.toBeInstanceOf(WonderfulDbError);
+    }
+    await expect(parseWonderfulDbBuffer(new TextEncoder().encode('not hex'), '123')).rejects.toThrow();
+  });
+});
+
 const FIXTURE_DIR = process.env.WONDERFUL_DB_DIR
   ?? join(process.env.USERPROFILE ?? process.env.HOME ?? '', 'AppData', 'Roaming', 'ACLOS', 'WonderfulDb');
 

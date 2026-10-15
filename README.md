@@ -4,17 +4,11 @@
   <p>Windows 无畏契约个人高光资料库</p>
   <p>把散落在本机的高光整理起来，随时查找和回看。</p>
   <p>
-    <a href="https://github.com/WizisCool/WonderfulUI/releases">
-      <img src="https://img.shields.io/github/v/release/WizisCool/WonderfulUI?style=flat&label=Version" alt="Latest release">
-    </a>
     <a href="LICENSE">
       <img src="https://img.shields.io/badge/License-GPL--3.0--or--later-blue?style=flat" alt="License: GPL-3.0-or-later">
     </a>
-    <a href="https://github.com/WizisCool/WonderfulUI/releases">
+    <a href="https://github.com/nightx521/wonderfulUI/releases">
       <img src="https://img.shields.io/badge/Platform-Windows%20x64-0078D4?style=flat" alt="Platform: Windows x64">
-    </a>
-    <a href="https://github.com/WizisCool/WonderfulUI/stargazers">
-      <img src="https://img.shields.io/github/stars/WizisCool/WonderfulUI?style=flat&label=Stars" alt="GitHub stars">
     </a>
   </p>
 </div>
@@ -28,17 +22,19 @@ WonderfulUI 把已经生成在电脑里的无畏契约高光整理成一个本�
 ## 能做什么
 
 - 整理多个本地账户，调整顺序并设置应用内显示名称。
-- 按搜索词、英雄、地图、模式、胜负、视频类型、MVP/SVP、日期、击杀和 KDA 筛选对局。
+- 按搜索词、英雄、地图、模式、房间类型、胜负/平局、视频类型、MVP/SVP/其他、日期、击杀和 KDA 筛选对局。房间类型可选全部、自定义或非自定义；其他成就包含普通和缺少记录的对局。
+- 竞技对局显示记录中的段位与本地图标，区分未定级和未知；四杀、五杀时刻用不同颜色标签显示，可同时出现。同类多个视频只显示一个标签。
 - 在应用内播放视频，按击杀和死亡事件跳转，并支持预卷播放。
 - 截取当前画面，或生成临时二维码把视频传到同一局域网的设备。
 - 查看账户、对局和视频概览，按需增量刷新或全量重建本地索引。
+- 导入旧电脑的 WonderfulDb 和已复制的视频，预览后写入资料库；按本机或导入设备筛选。
 
 WonderfulUI 只整理和读取已有高光，不会修改 ACLOS 内容。目前也不提供高光删除或编辑、
-资料库导出或备份、自定义数据目录、便携版和云同步。
+资料库导出或备份、切换本机扫描目录、便携版和云同步。
 
 ## 下载与首次使用
 
-从 [Releases](https://github.com/WizisCool/WonderfulUI/releases) 下载最新的 Windows x64
+从 [Releases](https://github.com/nightx521/wonderfulUI/releases) 下载最新的 Windows x64
 NSIS 安装程序：
 
 ```text
@@ -54,19 +50,21 @@ WonderfulUI_<version>_x64-setup.exe
 %USERPROFILE%\AppData\Roaming\ACLOS\WonderfulDb
 ```
 
-`WonderfulDb` 和可选的 `snapshot<openid>` 始终按只读数据处理。WonderfulUI 当前不能
-手动选择其他数据目录。没有发现高光、视频被移动或网络盘未挂载时，请查看
+`WonderfulDb` 和可选的 `snapshot<openid>` 始终按只读数据处理。本机扫描使用上述默认目录。
+迁移旧电脑数据时，在“设置 → 资料库 → 导入旧电脑数据”选择拷贝的 WonderfulDb 文件夹，
+再选择视频在当前电脑的文件夹，检查预览后确认导入。首次使用页面也提供这个入口。
+导入历史在后续扫描和重启后保留；重复对局合并显示。仅复制视频无法恢复对局信息。
+没有发现高光、视频被移动或网络盘未挂载时，请查看
 [故障排查](docs/TROUBLESHOOTING.md)。
 
 ## 网络和本地数据
 
 - 高光索引、账户偏好和诊断日志保存在 `%LOCALAPPDATA%\wonderful-ui\`。
 - 当前代码没有遥测、账号同步或后台上传。
-- 正式版在主界面显示后通过 HTTPS 请求 GitHub Releases 的 `latest.json` 检查更新；
-  设置中的手动检查也会访问该地址。
+- 版本升级使用项目提供的 NSIS 安装器，沿用原安装目录覆盖安装。
 - 快传只在播放器中由用户主动开启。它会在本机临时监听 `22357/TCP`，用带令牌的
   局域网地址提供当前视频下载。
-- 资料库浏览读取本地索引和随包资源；应用仍会在上述两种情况下使用网络。
+- 资料库浏览读取本地索引和随包资源；快传和用户打开的外部网站链接会使用网络。
 
 ## 从源码运行
 
@@ -79,7 +77,7 @@ WonderfulUI_<version>_x64-setup.exe
 安装依赖并运行检查：
 
 ```bash
-git clone https://github.com/WizisCool/WonderfulUI.git
+git clone https://github.com/nightx521/wonderfulUI.git
 cd WonderfulUI
 
 bun install --frozen-lockfile
@@ -116,6 +114,10 @@ bun run build
 ## 许可与声明
 
 WonderfulUI 使用 [GNU General Public License v3.0 or later](LICENSE)（`GPL-3.0-or-later`）发布。
+
+原作者：© 2026 WizisCool；二次开发：© 2026 murainy。原项目和许可说明见 [NOTICE.md](NOTICE.md)。
+当前开发仓库为私密仓库。向他人分发本修改版安装包时，须按 GPL 向接收者提供对应版本源码；
+私密开发仓库本身不替代源码提供安排。
 
 本项目与 Riot Games、腾讯、ACLOS、WeGame 或无畏契约官方没有隶属关系。游戏名称、
 标识和相关内容归各自权利人所有。

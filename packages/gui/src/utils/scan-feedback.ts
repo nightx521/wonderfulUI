@@ -11,7 +11,7 @@ export function scanCompletionFeedback(mode: ScanMode, totalErrors: number): Sca
   const count = Number.isFinite(totalErrors) ? Math.max(0, Math.trunc(totalErrors)) : 0;
   if (count > 0) {
     return {
-      message: `扫描完成，但有 ${count} 个账户或记录读取失败，请全量扫描重试`,
+      message: `扫描完成，但有 ${count} 个账户或记录读取失败，请查看账户提示或设置中的日志`,
       tone: 'error',
     };
   }

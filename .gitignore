@@ -43,6 +43,10 @@ ehthumbs.db
 .env
 .env.local
 .env.*.local
+*.key
+*.pfx
+*.p12
+*.pem
 
 # ── Local-only AI agent / workflow files ──────────────
 .agents/

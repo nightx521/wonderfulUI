@@ -8,9 +8,13 @@
     aria-label="视频进度"
     :aria-valuemin="0"
     :aria-valuemax="Math.round(safeDuration)"
-    :aria-valuenow="Math.round(safeCurrentTime)"
-    :aria-valuetext="`${currentTimeStr} / ${durationStr}`"
-    @mousedown.prevent="onMouseDown"
+    :aria-valuenow="Math.round(displayTime)"
+    :aria-valuetext="`${displayTimeStr} / ${durationStr}`"
+    :aria-disabled="safeDuration <= 0"
+    @pointerdown="onPointerDown"
+    @lostpointercapture="onLostCapture"
+    @pointermove="onHoverMove"
+    @pointerleave="hoverPct = null"
     @keydown="onSliderKeydown"
   >
     <div class="player-progress-track" ref="trackRef">
@@ -46,6 +50,9 @@
       </div>
       <div class="player-progress-fill" :style="fillStyle" />
       <div class="player-progress-thumb" :style="thumbStyle" />
+      <div v-if="previewPct !== null && safeDuration > 0" class="player-progress-preview"
+        :style="{ left: `clamp(26px, ${previewPct * 100}%, calc(100% - 26px))` }"
+        aria-hidden="true">{{ formatSeconds(previewPct * safeDuration) }}</div>
     </div>
   </div>
 </template>
@@ -80,6 +87,10 @@ const trackRef = ref<HTMLElement | null>(null);
 const markersEl = ref<HTMLElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const isDragging = ref(false);
+const dragPct = ref<number | null>(null);
+const hoverPct = ref<number | null>(null);
+let dragPointer: number | null = null;
+let suppressMarkerClick = false;
 
 const safeDuration = computed(() =>
   Number.isFinite(props.duration) && props.duration > 0 ? props.duration : 0
@@ -88,6 +99,11 @@ const safeCurrentTime = computed(() => {
   if (safeDuration.value <= 0 || !Number.isFinite(props.currentTime)) return 0;
   return Math.max(0, Math.min(safeDuration.value, props.currentTime));
 });
+const displayTime = computed(() => dragPct.value !== null
+  ? dragPct.value * safeDuration.value : safeCurrentTime.value);
+const displayTimeStr = computed(() => dragPct.value !== null
+  ? formatSeconds(displayTime.value) : props.currentTimeStr);
+const previewPct = computed(() => dragPct.value ?? hoverPct.value);
 
 const videoRef = computed(() => props.video);
 const matchRef = computed(() => props.match);
@@ -103,7 +119,7 @@ const canvasLayoutsJson = computed(() => JSON.stringify(layouts.value));
 const domLayouts = computed(() => useCanvas.value ? [] : layouts.value);
 
 const fillPct = computed(() =>
-  safeDuration.value > 0 ? (safeCurrentTime.value / safeDuration.value) * 100 : 0
+  safeDuration.value > 0 ? (displayTime.value / safeDuration.value) * 100 : 0
 );
 const fillStyle = computed(() => ({ transform: `scaleX(${fillPct.value / 100})` }));
 // left % is relative to the track; transform % is relative to the 8px thumb
@@ -120,12 +136,15 @@ function layoutForTrack() {
 }
 
 watch(() => props.duration, () => {
+  if (safeDuration.value <= 0) finishDrag();
   layoutForTrack();
   nextTick(() => drawCanvas());
 });
 
 watch(layouts, () => nextTick(() => drawCanvas()));
 watch(() => props.video, () => {
+  finishDrag();
+  hoverPct.value = null;
   recompute();
   layoutForTrack();
   nextTick(() => drawCanvas());
@@ -139,40 +158,72 @@ function clientToPct(clientX: number): number | null {
   return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
 }
 
-function onMouseDown(e: MouseEvent) {
-  if (e.button !== 0) return;
-  if (
-    e.target instanceof Element
-    && e.target.closest('.player-event-marker, .player-event-markers.is-canvas')
-  ) return;
+function onPointerDown(e: PointerEvent) {
+  if (e.button !== 0 || e.isPrimary === false || safeDuration.value <= 0) return;
+  if (isDragging.value) return;
+  suppressMarkerClick = false;
+  if (e.target instanceof Element && e.target.closest('.player-event-marker')) return;
+  if (e.target instanceof Element && e.target.closest('.player-event-markers.is-canvas') && canvasHit(e.clientX)) return;
   const pct = clientToPct(e.clientX);
   if (pct === null) return;
-  finishDrag();
+  e.preventDefault();
+  wrapRef.value?.focus({ preventScroll: true });
+  dragPointer = e.pointerId;
   isDragging.value = true;
+  dragPct.value = pct;
+  suppressMarkerClick = true;
+  try { wrapRef.value?.setPointerCapture?.(e.pointerId); } catch { /* Global listeners still track this drag. */ }
   emit('seekStart');
   emit('seek', pct);
-  document.addEventListener('mousemove', onDragMove);
-  document.addEventListener('mouseup', onDragEnd);
-  window.addEventListener('blur', onDragEnd);
+  document.addEventListener('pointermove', onDragMove);
+  document.addEventListener('pointerup', onDragEnd);
+  document.addEventListener('pointercancel', onDragCancel);
+  window.addEventListener('blur', finishDrag);
 }
 
-function onDragMove(e: MouseEvent) {
-  if (!isDragging.value) return;
+function onDragMove(e: PointerEvent) {
+  if (!isDragging.value || e.pointerId !== dragPointer) return;
+  if (e.pointerType === 'mouse' && e.buttons === 0) { finishDrag(); return; }
   const pct = clientToPct(e.clientX);
-  if (pct !== null) emit('seek', pct);
+  if (pct !== null) { dragPct.value = pct; emit('seek', pct); }
 }
 
-function onDragEnd() {
-  const wasDragging = isDragging.value;
-  isDragging.value = false;
-  document.removeEventListener('mousemove', onDragMove);
-  document.removeEventListener('mouseup', onDragEnd);
-  window.removeEventListener('blur', onDragEnd);
-  if (wasDragging) emit('seekEnd');
+function onDragEnd(e: PointerEvent) {
+  if (!isDragging.value || e.pointerId !== dragPointer) return;
+  const pct = clientToPct(e.clientX);
+  if (pct !== null) { dragPct.value = pct; emit('seek', pct); }
+  finishDrag();
+}
+
+function onDragCancel(e: PointerEvent) {
+  if (e.pointerId === dragPointer) finishDrag();
+}
+
+function onLostCapture(e: PointerEvent) {
+  if (e.pointerId === dragPointer) finishDrag();
+}
+
+function onHoverMove(e: PointerEvent) {
+  if (isDragging.value || e.pointerType === 'touch') return;
+  hoverPct.value = e.target instanceof Element && e.target.closest('.player-event-marker')
+    ? null : clientToPct(e.clientX);
 }
 
 function finishDrag() {
-  onDragEnd();
+  if (!isDragging.value) return;
+  const pointer = dragPointer;
+  dragPointer = null;
+  isDragging.value = false;
+  dragPct.value = null;
+  hoverPct.value = null;
+  document.removeEventListener('pointermove', onDragMove);
+  document.removeEventListener('pointerup', onDragEnd);
+  document.removeEventListener('pointercancel', onDragCancel);
+  window.removeEventListener('blur', finishDrag);
+  try {
+    if (pointer !== null && wrapRef.value?.hasPointerCapture?.(pointer)) wrapRef.value.releasePointerCapture(pointer);
+  } catch { /* The element may already be detached. */ }
+  emit('seekEnd');
 }
 
 // Slider keyboard semantics (WAI-ARIA slider pattern).
@@ -183,7 +234,7 @@ function onSliderKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
     return;
   }
-  const t = safeCurrentTime.value;
+  const t = displayTime.value;
   const d = safeDuration.value;
   let next = t;
   switch (e.key) {
@@ -202,6 +253,7 @@ function onSliderKeydown(e: KeyboardEvent) {
   }
   e.preventDefault();
   e.stopPropagation();
+  finishDrag();
   emit('seek', next / d);
 }
 
@@ -246,22 +298,29 @@ function fmtMs(ms: number): string {
   return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
+function formatSeconds(seconds: number): string {
+  const s = Math.floor(Math.max(0, seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return `${h ? `${h}:` : ''}${h ? String(m).padStart(2, '0') : m}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function canvasHit(clientX: number) {
+  if (!useCanvas.value || !canvasRef.value) return undefined;
+  const rect = canvasRef.value.getBoundingClientRect();
+  return layouts.value.find(layout => Math.abs((layout.leftPct / 100) * rect.width - (clientX - rect.left)) < 14);
+}
+
 function onMarkerDomClick(e: MouseEvent) {
+  if (suppressMarkerClick) { suppressMarkerClick = false; return; }
   const dot = (e.target as HTMLElement).closest('.player-event-marker') as HTMLElement | null;
   if (dot) {
     emit('markerClick', Number(dot.dataset.timeMs ?? '0'));
     return;
   }
   // Check canvas marker click
-  if (useCanvas.value && canvasRef.value) {
-    const canvas = canvasRef.value;
-    const rect = canvas.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const hit = layouts.value.find(l =>
-      Math.abs((l.leftPct / 100) * rect.width - clickX) < 14
-    );
-    if (hit) emit('markerClick', hit.timeMs);
-  }
+  const hit = canvasHit(e.clientX);
+  if (hit) emit('markerClick', hit.timeMs);
 }
 
 function onMarkerDomKeydown(e: KeyboardEvent) {
@@ -295,6 +354,18 @@ defineExpose({
   padding: 12px 0;
   cursor: pointer;
   position: relative;
+  touch-action: none;
+  user-select: none;
+}
+.player-progress-wrap.is-dragging { cursor: grabbing; }
+.player-progress-wrap.is-dragging .player-progress-fill { box-shadow: 0 0 0 1px var(--accent); }
+.player-progress-wrap.is-dragging .player-progress-thumb {
+  width: 12px; height: 12px; box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.player-progress-preview {
+  position: absolute; top: -52px; transform: translateX(-50%); pointer-events: none;
+  padding: 4px 7px; border-radius: 4px; background: var(--surface-3); color: var(--ink);
+  border: 1px solid var(--border); font: 12px var(--font-mono); white-space: nowrap;
 }
 .player-progress-wrap:focus-visible {
   outline: 2px solid var(--focus);

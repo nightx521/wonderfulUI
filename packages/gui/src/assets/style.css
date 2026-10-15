@@ -166,6 +166,8 @@ img { display: block; max-width: 100%; }
 }
 .match-result-pill.result-win  { color: var(--win);  background: var(--win-soft); }
 .match-result-pill.result-loss { color: var(--loss); background: var(--loss-soft); }
+.match-result-pill.result-draw,
+.match-result-pill.result-unknown { color: var(--ink-3); background: var(--surface-3); }
 
 /* ─── app shell ────────────────────────────────────────────── */
 .app {

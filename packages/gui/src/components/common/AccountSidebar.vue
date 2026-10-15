@@ -74,23 +74,18 @@
       <button
         class="pane-foot-item pane-foot-item--gear"
         type="button"
-        :aria-label="settingsAriaLabel"
-        :data-tip="settingsTip"
+        aria-label="设置"
+        data-tip="设置"
         @click="onSettingsClick"
       >
         <WIcon icon="ph:gear" :size="14" />
         <span>设置</span>
-        <span
-          v-if="update.badge"
-          class="pane-foot-badge"
-          aria-hidden="true"
-        />
       </button>
       <button
         class="pane-foot-version"
         type="button"
-        :aria-label="versionAriaLabel"
-        :data-tip="versionTip"
+        :aria-label="`当前版本 v${APP_VERSION}`"
+        data-tip="关于 WonderfulUI"
         @click="onVersionClick"
       >
         v{{ APP_VERSION }}
@@ -114,50 +109,21 @@ import { useAccountStore, ALL_ACCOUNTS, type Account } from '../../stores/accoun
 import { useFilterStore } from '../../stores/filter.ts';
 import { useSettingsStore } from '../../stores/settings.ts';
 import { useUiStore } from '../../stores/ui.ts';
-import { useUpdateStore } from '../../stores/update.ts';
 import { APP_VERSION } from '../../utils/version.ts';
+import { accountReadFeedback } from '../../utils/account-status.ts';
 
 const account = useAccountStore();
 const filterStore = useFilterStore();
 const settings = useSettingsStore();
 const ui = useUiStore();
-const update = useUpdateStore();
-
-const settingsAriaLabel = computed(() =>
-  update.badge && update.update
-    ? `设置，有可用更新 v${update.update.version}`
-    : '设置',
-);
-const settingsTip = computed(() =>
-  update.badge && update.update
-    ? `设置 · 有新版本 v${update.update.version}`
-    : '设置',
-);
-const versionAriaLabel = computed(() =>
-  update.badge && update.update
-    ? `当前版本 v${APP_VERSION}，有新版本 v${update.update.version}`
-    : `当前版本 v${APP_VERSION}`,
-);
-const versionTip = computed(() =>
-  update.badge && update.update
-    ? `有新版本 v${update.update.version}`
-    : '检查更新',
-);
 
 function onSettingsClick() {
-  // 「稍后」后 badge 仍在；设置入口必须始终打开设置，不被更新弹窗劫持。
   settings.setOpen(true);
 }
 
 function onVersionClick() {
-  // 版本号：有可用更新时再开更新窗；否则进关于并手动检查。
-  if (update.badge && update.update) {
-    update.openModal();
-    return;
-  }
   settings.setTab('about');
   settings.setOpen(true);
-  void update.checkForUpdate(false);
 }
 
 const editingOpenid = ref<string | null>(null);
@@ -209,7 +175,9 @@ function rowTip(a: Account): string {
       ? `所有账户的高光\n${filteredCount(a)} / ${account.matches.length} 条命中`
       : `所有账户的高光\n${account.matches.length} 条高光`;
   }
-  if (a.error) return '账户读取失败\n请执行全量扫描重试，详细原因已写入本地日志';
+  const failure = accountReadFeedback(a);
+  if (failure) return `${failure.title}\n${failure.cause}\n${failure.action}`;
+  if (a.matchCount === 0) return '暂无本机高光\n已读取账户信息，高光记录为空；生成高光后刷新资料库';
   const label = accountLabel(a);
   const cnt = countText(a);
   return hasActiveFilters.value

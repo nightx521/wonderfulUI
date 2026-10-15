@@ -332,6 +332,101 @@ describe('PlayerHost context menu', () => {
   });
 });
 
+describe('PlayerHost scrub seeking', () => {
+  test('both control hide timers stay disabled while dragging outside the controls', async () => {
+    vi.useFakeTimers();
+    const wrapper = mountPlayer();
+    try {
+      const video = wrapper.get('video').element as HTMLVideoElement;
+      Object.defineProperty(video, 'duration', { configurable: true, value: 100 });
+      video.dispatchEvent(new Event('loadedmetadata'));
+      video.dispatchEvent(new Event('play'));
+      await nextTick();
+      const track = wrapper.get('.player-progress-track').element as HTMLElement;
+      track.getBoundingClientRect = () => ({ left: 0, width: 200 } as DOMRect);
+      await wrapper.get('.player-progress-wrap').trigger('pointerdown', {
+        button: 0, buttons: 1, pointerId: 1, isPrimary: true, clientX: 100,
+      });
+      await wrapper.get('.player-controls').trigger('mouseleave');
+      await vi.advanceTimersByTimeAsync(3100);
+      expect(wrapper.get('.player-controls').classes()).not.toContain('is-hidden');
+      window.dispatchEvent(new Event('blur'));
+      await vi.advanceTimersByTimeAsync(3100);
+      expect(wrapper.get('.player-controls').classes()).toContain('is-hidden');
+    } finally { wrapper.unmount(); vi.useRealTimers(); }
+  });
+  test('single keyboard or marker seeks update displayed time immediately without toggling playback', async () => {
+    const wrapper = mountPlayer();
+    try {
+      const video = wrapper.get('video').element as HTMLVideoElement;
+      Object.defineProperty(video, 'duration', { configurable: true, value: 100 });
+      const play = vi.spyOn(video, 'play');
+      const pause = vi.spyOn(video, 'pause');
+      const controls = wrapper.findComponent(PlayerControls);
+      controls.vm.$emit('seek', 0.65);
+      await nextTick();
+      expect(video.currentTime).toBe(65);
+      expect(controls.props('currentTime')).toBe(65);
+      expect(play).not.toHaveBeenCalled();
+      expect(pause).not.toHaveBeenCalled();
+    } finally { wrapper.unmount(); }
+  });
+  test('coalesces slow seeks while time feedback stays immediate, then commits the release position', async () => {
+    vi.useFakeTimers();
+    const wrapper = mountPlayer();
+    try {
+      const video = wrapper.get('video').element as HTMLVideoElement;
+      const writes: number[] = [];
+      let mediaTime = 0;
+      Object.defineProperty(video, 'duration', { configurable: true, value: 100 });
+      Object.defineProperty(video, 'currentTime', { configurable: true, get: () => mediaTime,
+        set: (value: number) => { writes.push(value); mediaTime = value; } });
+      const controls = wrapper.findComponent(PlayerControls);
+      controls.vm.$emit('seekStart');
+      controls.vm.$emit('seek', 0.1);
+      controls.vm.$emit('seek', 0.2);
+      controls.vm.$emit('seek', 0.3);
+      video.dispatchEvent(new Event('timeupdate'));
+      await nextTick();
+      expect(writes).toEqual([10]);
+      expect(controls.props('currentTime')).toBe(30);
+      video.dispatchEvent(new Event('seeked'));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(writes).toEqual([10, 30]);
+      controls.vm.$emit('seek', 0.9);
+      controls.vm.$emit('seekEnd');
+      expect(writes).toEqual([10, 30, 90]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(writes).toEqual([10, 30, 90]);
+    } finally { wrapper.unmount(); vi.useRealTimers(); }
+  });
+
+  test('missing decoder completion recovers, and replacing a session cancels stale queued seeks', async () => {
+    vi.useFakeTimers();
+    const wrapper = mountPlayer();
+    try {
+      const video = wrapper.get('video').element as HTMLVideoElement;
+      Object.defineProperty(video, 'duration', { configurable: true, value: 100 });
+      Object.defineProperty(video, 'readyState', { configurable: true, value: 1 });
+      const controls = wrapper.findComponent(PlayerControls);
+      controls.vm.$emit('seekStart');
+      controls.vm.$emit('seek', 0.1);
+      controls.vm.$emit('seek', 0.2);
+      await vi.advanceTimersByTimeAsync(800);
+      expect(video.currentTime).toBe(20);
+      controls.vm.$emit('seek', 0.8);
+      const store = usePlayerStore();
+      store.open(store.video!, mkMatch(), 5_000);
+      await nextTick();
+      await nextTick();
+      await vi.advanceTimersByTimeAsync(1600);
+      expect(video.currentTime).toBe(5);
+      video.dispatchEvent(new Event('seeked'));
+      expect(video.currentTime).toBe(5);
+    } finally { wrapper.unmount(); vi.useRealTimers(); }
+  });
+});
+
 describe('PlayerHost playback sessions', () => {
   let wrapper: ReturnType<typeof mountPlayer>;
 
