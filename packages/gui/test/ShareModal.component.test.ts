@@ -19,6 +19,56 @@ import ShareModal from '../src/components/share/ShareModal.vue';
 import { useShareStore } from '../src/stores/share.ts';
 
 describe('ShareModal async lifecycle', () => {
+  test('a port conflict stays open and ending its program requires a separate confirmation', async () => {
+    listenMock.mockReset();
+    invokeMock.mockReset();
+    listenMock.mockResolvedValue(vi.fn());
+    invokeMock.mockImplementation((...call: unknown[]) => {
+      if (call[0] === 'start_share_server') return Promise.reject('WUI_SHARE_PORT_IN_USE|');
+      if (call[0] === 'inspect_share_port') return Promise.resolve([{ pid: 42, name: 'example.exe', ticket: 'fixture-ticket', reason: null }]);
+      return Promise.resolve(undefined);
+    });
+    const wrapper = mount(ShareModal, { props: { videoPath: 'D:\\Highlights\\clip.mp4', videoName: 'clip.mp4' }, global: { plugins: [createPinia()] } });
+    await flushPromises();
+    expect(wrapper.emitted('close')).toBeUndefined();
+    expect(document.body.textContent).toContain('example.exe（PID 42）');
+    ([...document.body.querySelectorAll('button')].find(button => button.textContent === '结束占用程序') as HTMLButtonElement).click();
+    await flushPromises();
+    expect(document.body.textContent).toContain('未保存的内容可能丢失');
+    expect(invokeMock.mock.calls.some(call => call[0] === 'release_share_port')).toBe(false);
+    ([...document.body.querySelectorAll('button')].find(button => button.textContent === '取消') as HTMLButtonElement).click();
+    await flushPromises();
+    expect(invokeMock.mock.calls.some(call => call[0] === 'release_share_port')).toBe(false);
+    wrapper.unmount();
+  });
+  test('an active download needs confirmation before forced closure', async () => {
+    listenMock.mockReset();
+    invokeMock.mockReset();
+    listenMock.mockResolvedValue(vi.fn());
+    invokeMock.mockImplementation((...call: unknown[]) => {
+      const command = String(call[0]);
+      const args = call[1] as Record<string, unknown>;
+      if (command === 'start_share_server') return Promise.resolve({ sessionId: args.sessionId, port: 22357, token: 'fixture', url: 'http://127.0.0.1:22357/w/fixture', lanIp: '127.0.0.1', qrSvg: '<svg/>', videoName: 'clip.mp4', videoSize: 1, startedAtUnix: 1 });
+      if (command === 'stop_share_server') return Promise.resolve({ stopped: args.force === true, activeDownloads: args.force ? 0 : 1 });
+      return Promise.resolve(undefined);
+    });
+    const wrapper = mount(ShareModal, { props: { videoPath: 'D:\\Highlights\\clip.mp4', videoName: 'clip.mp4' }, global: { plugins: [createPinia()] } });
+    await flushPromises();
+    (document.body.querySelector('.share-modal-close') as HTMLButtonElement).click();
+    await flushPromises();
+    expect(document.body.textContent).toContain('仍有设备正在下载');
+    expect(wrapper.emitted('close')).toBeUndefined();
+    const continueButton = [...document.body.querySelectorAll('button')].find(button => button.textContent === '继续下载') as HTMLButtonElement;
+    continueButton.click();
+    await flushPromises();
+    expect(useShareStore().status).toBe('running');
+    (document.body.querySelector('.share-modal-close') as HTMLButtonElement).click();
+    await flushPromises();
+    ([...document.body.querySelectorAll('button')].find(button => button.textContent === '停止下载并关闭') as HTMLButtonElement).click();
+    await flushPromises();
+    expect(wrapper.emitted('close')).toHaveLength(1);
+    wrapper.unmount();
+  });
   test('unmount during listener registration never starts a hidden server', async () => {
     let resolveListen!: (unlisten: () => void) => void;
     const unlisten = vi.fn();

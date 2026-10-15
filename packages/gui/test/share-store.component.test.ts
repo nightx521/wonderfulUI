@@ -33,6 +33,64 @@ beforeEach(() => {
 });
 
 describe('share store session races', () => {
+  test('a replacement start waits until the preceding shutdown is acknowledged', async () => {
+    let finishStop!: () => void;
+    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === 'start_share_server') return Promise.resolve(info(String(args?.sessionId)));
+      if (command === 'stop_share_server') return new Promise<void>(resolve => { finishStop = resolve; });
+      return Promise.resolve(undefined);
+    });
+    const share = useShareStore();
+    await share.start('D:\\Highlights\\first.mp4');
+    const stopping = share.stop();
+    const starting = share.start('D:\\Highlights\\second.mp4');
+    await Promise.resolve();
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'start_share_server')).toHaveLength(1);
+    finishStop();
+    await Promise.all([stopping, starting]);
+    expect(share.status).toBe('running');
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'start_share_server')).toHaveLength(2);
+  });
+  test('normal close stays open while a native download is active and force close is explicit', async () => {
+    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === 'start_share_server') return Promise.resolve(info(String(args?.sessionId)));
+      if (command === 'stop_share_server') return Promise.resolve({ stopped: args?.force === true, activeDownloads: args?.force ? 0 : 1 });
+      return Promise.resolve(undefined);
+    });
+    const share = useShareStore();
+    await share.start('D:\\Highlights\\clip.mp4');
+    const sessionId = share.activeSessionId;
+    expect(await share.stop(false)).toBe(false);
+    expect(share.status).toBe('running');
+    expect(share.activeSessionId).toBe(sessionId);
+    expect(share.activeDownloads).toBe(1);
+    expect(await share.stop(true)).toBe(true);
+    expect(share.status).toBe('idle');
+    expect(invokeMock).toHaveBeenLastCalledWith('stop_share_server', { sessionId, force: true });
+  });
+
+  test('a close error remains visible instead of reporting successful shutdown', async () => {
+    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => command === 'start_share_server'
+      ? Promise.resolve(info(String(args?.sessionId))) : Promise.reject(new Error('stop failed')));
+    const share = useShareStore();
+    await share.start('D:\\Highlights\\clip.mp4');
+    expect(await share.stop(false)).toBe(false);
+    expect(share.info).not.toBeNull();
+    expect(share.lastError).toBe('快传关闭失败，请重试');
+  });
+
+  test('port conflicts expose the native application name and use its ticket for release', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'start_share_server') return Promise.reject('WUI_SHARE_PORT_IN_USE|');
+      if (command === 'inspect_share_port') return Promise.resolve([{ pid: 42, name: 'example.exe', ticket: 'native-ticket', reason: null }]);
+      return Promise.resolve(undefined);
+    });
+    const share = useShareStore();
+    await share.start('D:\\Highlights\\clip.mp4');
+    expect(share.portOwners[0]?.name).toBe('example.exe');
+    expect(await share.releasePort('native-ticket')).toBe(true);
+    expect(invokeMock).toHaveBeenCalledWith('release_share_port', { ticket: 'native-ticket' });
+  });
   test('stop during start invalidates UI and cleans the late backend session', async () => {
     let resolveStart!: (value: ShareServerInfo) => void;
     let startSessionId = '';
@@ -73,6 +131,7 @@ describe('share store session races', () => {
     const share = useShareStore();
     await share.start('D:\\Highlights\\first.mp4');
     const oldSessionId = share.info!.sessionId;
+    share.onActivity({ sessionId: oldSessionId, activeDownloads: 1 });
     await share.start('D:\\Highlights\\second.mp4');
     const currentSessionId = share.info!.sessionId;
 
@@ -87,6 +146,8 @@ describe('share store session races', () => {
     expect(share.status).toBe('running');
     expect(share.info?.sessionId).toBe(currentSessionId);
     expect(share.downloadCount).toBe(0);
+    expect(share.activeDownloads).toBe(0);
+    expect(share.onActivity({ sessionId: oldSessionId, activeDownloads: 1 })).toBe(false);
 
     expect(share.onDownloaded({
       sessionId: currentSessionId,

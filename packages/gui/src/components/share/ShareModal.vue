@@ -1,18 +1,5 @@
 <script setup lang="ts">
-// "快传" QR 分享模态（v5 最终版）。
-//
-// 用户行为：
-// 1. 点播放器"分享" → 模态弹出，server 启动
-// 2. 手机扫码 → 浏览器下载 .mp4
-// 3. **用户主动关模态（点 × 或点遮罩）→ server 关闭**
-//
-// 重要决策（v5）：
-// - **server 生命周期 = 模态生命周期**：模态挂载时启动、卸载时关闭。
-//   之前"下载完成 1s 自动关"被删除 —— 微信场景下用户可能还没下载完
-//   或者根本不需要下载（只看预览），让用户自己决定什么时候关。
-// - **3 分钟空闲兜底**仍在 Rust 端：防止用户开模态后没关、session 挂
-//   着没人收，端口被长占。这是唯一保留的自动关路径。
-// - QR 点击复制链接：整块 QR 框是 <button>，点击后 1.5s 显示"已复制 ✓"。
+// 快传二维码与原生会话共用生命周期。关闭先等待端口释放，活动下载由用户确认中断。
 
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import WIcon from '../common/WIcon.vue';
@@ -25,6 +12,8 @@ import { friendlyShareError } from '../../utils/share-errors.ts';
 import { ownsTopModalLayer } from '../../utils/modal-layer.ts';
 import { useDialogFocus } from '../../utils/dialog-focus.ts';
 import type {
+  ShareActivityEvent,
+  PortOwner,
   ShareDownloadedEvent,
   ShareStoppedEvent,
 } from '../../stores/share.ts';
@@ -41,6 +30,10 @@ const emit = defineEmits<{
 const share = useShareStore();
 const ui = useUiStore();
 const shareDialogRef = ref<HTMLElement | null>(null);
+const closing = ref(false);
+const confirmStop = ref(false);
+const confirmOwner = ref<PortOwner | null>(null);
+const releasing = ref(false);
 
 const isOpen = computed(() => share.status !== 'idle' || share.info !== null);
 const { onDialogTab } = useDialogFocus(shareDialogRef, () => isOpen.value, 'share');
@@ -54,12 +47,14 @@ const formattedSize = computed(() => {
 });
 
 const statusText = computed(() => {
+  if (share.activeDownloads > 0) return '正在下载';
   if (share.downloadCount === 0) return '等待扫码';
   return '下载完成';
 });
 
 let unlistenStopped: (() => void) | null = null;
 let unlistenDownloaded: (() => void) | null = null;
+let unlistenActivity: (() => void) | null = null;
 const copyCooldown = ref(0); // QR 复制防抖
 let copyCooldownTimer: ReturnType<typeof setTimeout> | null = null;
 let disposed = false;
@@ -68,7 +63,8 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && ownsTopModalLayer('share')) {
     e.preventDefault();
     e.stopPropagation();
-    close();
+    if (confirmStop.value || confirmOwner.value) { confirmStop.value = false; confirmOwner.value = null; }
+    else void close();
   }
 }
 
@@ -115,6 +111,10 @@ async function initializeShare(): Promise<void> {
     }
     unlistenStopped = stopStopped;
 
+    const stopActivity = await listen<ShareActivityEvent>('wui://share_activity', e => share.onActivity(e.payload));
+    if (disposed) { stopActivity(); return; }
+    unlistenActivity = stopActivity;
+
     // 启动 server（模态生命周期 = server 生命周期）。Every await above
     // checks disposed so closing during listener registration cannot start an
     // invisible server after onUnmounted already ran.
@@ -123,7 +123,6 @@ async function initializeShare(): Promise<void> {
     if (share.status === 'error') {
       clientLog('error', 'share-modal', `start failed: ${share.lastError}`);
       ui.showToast(share.lastError || friendlyShareError(null, 'start'), 'error');
-      emit('close');
     } else if (share.info) {
       clientLog(
         'info',
@@ -151,6 +150,7 @@ onUnmounted(() => {
   clientLog('info', 'share-modal', 'unmount → stopping server');
   unlistenDownloaded?.();
   unlistenStopped?.();
+  unlistenActivity?.();
   if (copyCooldownTimer !== null) clearTimeout(copyCooldownTimer);
   document.removeEventListener('keydown', onKeydown, true);
   // **关模态 → 关 server**：避免端口长占
@@ -174,16 +174,33 @@ async function copyLink() {
   }
 }
 
-function close() {
+async function close(force = false) {
+  if (closing.value || releasing.value) return;
   clientLog('info', 'share-modal', 'close requested (× / Esc / backdrop)');
-  emit('close');
+  closing.value = true;
+  const stopped = await share.stop(force);
+  closing.value = false;
+  if (disposed) return;
+  if (stopped) emit('close');
+  else if (share.activeDownloads > 0) confirmStop.value = true;
+  else ui.showToast(share.lastError || '快传关闭失败，请重试', 'error');
+}
+
+async function endOwner() {
+  const owner = confirmOwner.value;
+  if (!owner?.ticket || releasing.value) return;
+  releasing.value = true;
+  const released = await share.releasePort(owner.ticket);
+  releasing.value = false;
+  confirmOwner.value = null;
+  if (released && !disposed) await share.start(props.videoPath);
 }
 </script>
 
 <template>
   <Teleport to="body">
     <Transition name="share-modal">
-      <div v-if="isOpen" class="share-modal-backdrop" @click.self="close">
+      <div v-if="isOpen" class="share-modal-backdrop" @click.self="close()">
         <section
           ref="shareDialogRef"
           class="share-modal-card"
@@ -193,17 +210,39 @@ function close() {
           tabindex="-1"
           @keydown.tab="onDialogTab"
         >
-          <button class="share-modal-close" aria-label="关闭" @click="close">×</button>
+          <button class="share-modal-close" aria-label="关闭" :disabled="closing || releasing" @click="close()">×</button>
 
-          <div v-if="share.status === 'starting'" class="share-modal-state" role="status" aria-live="polite">
+          <div v-if="confirmStop" class="share-modal-state" role="alert">
+            <h2 id="share-modal-title">仍有设备正在下载</h2>
+            <p>关闭快传会中断尚未完成的下载，确定关闭吗？</p>
+            <button class="share-btn" :disabled="closing" @click="close(true)">停止下载并关闭</button>
+            <button class="share-btn" :disabled="closing" @click="confirmStop = false">继续下载</button>
+          </div>
+
+          <div v-else-if="confirmOwner" class="share-modal-state" role="alert">
+            <h2 id="share-modal-title">结束占用程序？</h2>
+            <p>{{ confirmOwner.name }}（PID {{ confirmOwner.pid }}）</p>
+            <p class="share-modal-sub">该程序将退出，未保存的内容可能丢失。</p>
+            <button class="share-btn" :disabled="releasing" @click="endOwner">结束程序并重试</button>
+            <button class="share-btn" :disabled="releasing" @click="confirmOwner = null">取消</button>
+          </div>
+
+          <div v-else-if="share.status === 'starting'" class="share-modal-state" role="status" aria-live="polite">
             <div class="share-spinner" />
             <p>正在启动快传…</p>
             <p class="share-modal-sub">首次使用可能需要确认 Windows 管理员授权。</p>
           </div>
 
           <div v-else-if="share.status === 'error'" class="share-modal-state">
+            <h2 id="share-modal-title">快传启动失败</h2>
             <p class="share-modal-error">启动失败：{{ share.lastError }}</p>
-            <button class="share-btn" @click="close">关闭</button>
+            <div v-for="owner in share.portOwners" :key="owner.pid" class="share-port-owner">
+              <p>{{ owner.name }}（PID {{ owner.pid }}）占用快传端口</p>
+              <p v-if="owner.reason" class="share-modal-sub">{{ owner.reason }}</p>
+              <button v-if="owner.ticket" class="share-btn" @click="confirmOwner = owner">结束占用程序</button>
+            </div>
+            <button class="share-btn" @click="share.start(videoPath)">重试</button>
+            <button class="share-btn" @click="close()">关闭</button>
           </div>
 
           <template v-else-if="share.info">

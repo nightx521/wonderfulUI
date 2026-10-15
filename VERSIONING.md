@@ -51,7 +51,8 @@ GitHub Actions 使用本修改版自己的签名 secret。私密仓库中的文�
 
 ## 版本说明
 
-`versions.json` 保存历史 release notes，供发布 workflow 生成应用内更新说明。新增版本
+`versions.json` 保存历史 release notes，供发布 workflow 生成应用内更新说明。预览版本的 release entry 设置 `prerelease: true`，workflow 发布为 `<version> Pre`，
+使用相同版本 tag 和签名产物；GitHub 稳定 latest 入口不包含预览版。新增版本
 时可以在运行 bump 脚本前设置 `WUI_RELEASE_NOTES`；不要为了修改文档而改动已有版本历史。
 
 ## 平台边界

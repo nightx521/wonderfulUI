@@ -446,6 +446,10 @@ async function mockInvoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       }) as T;
     }
     case 'stop_share_server':
+      return { stopped: true, activeDownloads: 0 } as T;
+    case 'inspect_share_port':
+      return [] as T;
+    case 'release_share_port':
       return undefined as T;
     case 'play_video':
     case 'open_external_url':

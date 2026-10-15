@@ -143,7 +143,7 @@ export interface DebugDownloadingOpts {
   downloaded?: number;
 }
 
-export const FRIENDLY_CHECK_ERROR = '无法获取更新，请尝试切换更新方式；仓库未公开或尚未发布版本时也会出现此提示';
+export const FRIENDLY_CHECK_ERROR = '无法获取更新，请检查网络或切换更新方式后重试';
 export const FRIENDLY_UPDATE_ERROR = '下载或安装更新失败，请稍后重试';
 export const DEV_FAKE_DONE_TOAST = '[dev] 模拟完成，已跳过 relaunch';
 

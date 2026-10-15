@@ -8,7 +8,9 @@ mod parser;
 #[cfg(feature = "updater")]
 mod project_updater;
 mod share_policy;
+mod share_port;
 mod share_server;
+mod share_transport;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -57,6 +59,8 @@ pub fn run() {
             start_share_server,
             stop_share_server,
             share_server_status,
+            share_port::inspect_share_port,
+            share_port::release_share_port,
             log_event,
             capture_video_frame,
             #[cfg(feature = "updater")]
@@ -1103,11 +1107,23 @@ async fn start_share_server(
 }
 
 #[tauri::command]
-fn stop_share_server(app: tauri::AppHandle, session_id: Option<String>) -> Result<(), String> {
+async fn stop_share_server(
+    app: tauri::AppHandle,
+    session_id: Option<String>,
+    force: Option<bool>,
+) -> Result<share_server::StopOutcome, String> {
     if let Some(value) = session_id.as_deref() {
         validate_share_session_id(value)?;
     }
-    share_server::stop_server(share_state(&app).inner(), session_id)
+    tauri::async_runtime::spawn_blocking(move || {
+        share_server::stop_server(
+            share_state(&app).inner(),
+            session_id,
+            force.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|_| "快传关闭失败".to_string())?
 }
 
 fn validate_share_session_id(session_id: &str) -> Result<(), String> {

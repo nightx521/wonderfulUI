@@ -450,24 +450,25 @@ Account list uses a custom tooltip, not native `title=`.
 ## Share ("快传") Modal
 
 - **Single production share path = LAN QR ("快传")**: the player toolbar's
-  `share` event opens `ShareModal` directly. Rust runs an embedded `tiny_http`
-  server (see ARCHITECTURE.md). There is no dormant platform registry or
+  `share` event opens `ShareModal` directly. Rust owns a cancellable fixed-port HTTP
+  listener (see ARCHITECTURE.md). There is no dormant platform registry or
   unrendered popover abstraction; add a second real target only when product
   behavior requires it. The modal owns the server lifecycle — server starts on
-  `onMounted`, stops on `onUnmounted` (so × / Esc / backdrop release the port).
+  `onMounted`. All close controls await native shutdown before dismissing. Active
+  downloads require confirmation; unmount provides forced cleanup as a fallback.
 - **Modal layout (极简)**: title `快传` + 240×240 QR (Rust-rendered circles, `EcLevel::H`, click-to-copy) + a single status row `<size> · <dot><status text>` + 6 px progress bar matching `.boot-progress` (indeterminate shimmer while waiting, `scaleX(0→1)` on completion). No "复制链接" button — the QR is the button.
 - **Accessible state:** the QR button has an explicit copy action label and its
   injected SVG is decorative. The status row is one polite atomic live region;
   the bar is an indeterminate `progressbar` while waiting and exposes 100 only
-  after a completed download. Native paths, bind addresses, and server details
-  stay in local logs; visible errors use generic recovery text.
+  after a completed download. Native paths and server details stay in local logs. Port conflicts show
+  native application name/PID and an eligible process action with separate confirmation.
 - **Status states** (Rust-side event `wui://share_downloaded` is the only source of truth):
   - `downloadCount === 0` → gray dot, "等待扫码", progress bar indeterminate shimmer
   - `downloadCount >= 1` → red dot (with same pulse animation but wider halo), "下载完成", progress bar `scaleX(1)`
-  - The dot is red **only after** `req.respond()` returns `Ok(())` — i.e. after the file actually streamed to the client. WeChat scanning a URL that only previews without downloading does NOT trigger the "下载完成" state (BrokenPipe mid-stream → `respond()` errors → count stays 0). This is by design.
+  - A completed event is emitted only after the complete registered file was written successfully. Aborted transfers never increment the count. The status displays 正在下载 while native activity is nonzero.
 - **Server lifecycle**:
   - Modal `onMounted` registers both Tauri event listeners, checking its
-    `disposed` flag after each async registration, then calls
+    `disposed` flag after each async registration (including share activity), then calls
     `share.start(videoPath)`. A listener that resolves after unmount is
     unsubscribed immediately; a closed modal must never start a hidden server.
   - Modal `onUnmounted` invalidates the current share session synchronously,
@@ -476,7 +477,7 @@ Account list uses a custom tooltip, not native `title=`.
     results clean up only their own backend server, and stale events from a
     replaced server are ignored.
   - 3-minute idle timeout is the **only** auto-shutdown path (safety net for "user opened modal then forgot"). NOT "close after first download" — the user controls when to close.
-- **Close paths** (all route to `share.stop()` via `onUnmounted`):
+- **Close paths** (await `share.stop(false)`; active transfers expose continue/force-stop choices):
   - Click the `×` in the top-right corner
   - Press `Escape` (capture-phase keydown listener, `preventDefault` + `stopPropagation` so it doesn't conflict with PlayerHost's own Esc handling)
   - Click the backdrop (outside the card)

@@ -45,6 +45,10 @@ export interface ShareDownloadedEvent {
   sizeBytes: number;
 }
 
+export interface ShareActivityEvent { sessionId: string; activeDownloads: number }
+export interface PortOwner { pid: number; name: string; ticket: string | null; reason: string | null }
+interface StopOutcome { stopped: boolean; activeDownloads: number }
+
 export type ShareStatus = 'idle' | 'starting' | 'running' | 'error';
 
 export interface ShareStoppedEvent {
@@ -60,14 +64,20 @@ export const useShareStore = defineStore('share', () => {
   const lastBytes = ref(0);
   const lastError = ref('');
   const activeSessionId = ref<string | null>(null);
+  const activeDownloads = ref(0);
+  const portOwners = ref<PortOwner[]>([]);
+  let pendingStop: Promise<boolean> | null = null;
 
-  async function stopBackendSession(sessionId: string): Promise<void> {
-    try {
-      await invoke('stop_share_server', { sessionId });
-    } catch {
-      // The UI must still close. If start is in flight, its stale-result path
-      // retries this session-scoped stop after the backend returns its token.
-    }
+  async function stopBackendSession(sessionId: string): Promise<boolean> {
+    const previous = pendingStop;
+    const request = (async () => {
+      await previous;
+      try { await invoke('stop_share_server', { sessionId, force: true }); return true; }
+      catch { return false; }
+    })();
+    pendingStop = request;
+    try { return await request; }
+    finally { if (pendingStop === request) pendingStop = null; }
   }
 
   function resetVisibleState(): void {
@@ -75,6 +85,8 @@ export const useShareStore = defineStore('share', () => {
     status.value = 'idle';
     downloadCount.value = 0;
     lastBytes.value = 0;
+    activeDownloads.value = 0;
+    portOwners.value = [];
   }
 
   async function start(videoPath: string) {
@@ -90,6 +102,8 @@ export const useShareStore = defineStore('share', () => {
     downloadCount.value = 0;
     lastBytes.value = 0;
     lastError.value = '';
+    portOwners.value = [];
+    activeDownloads.value = 0;
     if (previousSessionId !== null) {
       await stopBackendSession(previousSessionId);
       if (!shouldCommitShareStart(
@@ -99,6 +113,8 @@ export const useShareStore = defineStore('share', () => {
       )) return;
     }
     try {
+      if (pendingStop) await pendingStop;
+      if (!shouldCommitShareStart(status.value, activeSessionId.value, requestSessionId)) return;
       const result = await invoke<ShareServerInfo>('start_share_server', {
         path: videoPath,
         sessionId: requestSessionId,
@@ -128,22 +144,68 @@ export const useShareStore = defineStore('share', () => {
       lastError.value = friendlyShareError(e, 'start');
       info.value = null;
       status.value = 'error';
+      if (String(e).includes('WUI_SHARE_PORT_IN_USE')) await inspectPort();
     }
   }
 
-  async function stop() {
+  async function stop(force = true): Promise<boolean> {
     const sessionId = activeSessionId.value;
+    const previousInfo = info.value;
+    if (!force && sessionId !== null) {
+      try {
+        const result = await invoke<StopOutcome | undefined>('stop_share_server', { sessionId, force: false });
+        if (activeSessionId.value !== sessionId && activeSessionId.value !== null) return false;
+        if (result && !result.stopped) { activeDownloads.value = result.activeDownloads; return false; }
+      } catch (error) {
+        clientLog('error', 'share-store', `stop failed: ${error}`);
+        lastError.value = '快传关闭失败，请重试';
+        return false;
+      }
+    }
     // Invalidate synchronously before awaiting IPC. An in-flight start sees
     // the mismatch and cleans up its own backend session after it returns.
     activeSessionId.value = null;
     resetVisibleState();
-    if (sessionId !== null) await stopBackendSession(sessionId);
+    if (force && sessionId !== null && !await stopBackendSession(sessionId)) {
+      if (activeSessionId.value === null) {
+        activeSessionId.value = sessionId;
+        info.value = previousInfo;
+        lastError.value = '快传关闭失败，请重试';
+        status.value = 'error';
+      }
+      return false;
+    }
+    return true;
+  }
+
+  async function inspectPort() {
+    const session = activeSessionId.value;
+    try { const owners = await invoke<PortOwner[]>('inspect_share_port') ?? []; if (activeSessionId.value === session) portOwners.value = owners; }
+    catch { if (activeSessionId.value === session) portOwners.value = []; }
+  }
+
+  async function releasePort(ticket: string): Promise<boolean> {
+    try {
+      await invoke('release_share_port', { ticket });
+      await inspectPort();
+      return true;
+    } catch {
+      lastError.value = '无法结束占用程序，占用信息可能已变化，请重新检查或自行退出该程序';
+      await inspectPort();
+      return false;
+    }
+  }
+
+  function onActivity(payload: ShareActivityEvent): boolean {
+    if (!shouldHandleShareEvent(activeSessionId.value, payload.sessionId)) return false;
+    activeDownloads.value = payload.activeDownloads;
+    return true;
   }
 
   /** 收到 `wui://share_downloaded` 事件时调用。 */
   function onDownloaded(payload: ShareDownloadedEvent): boolean {
     if (!shouldHandleShareEvent(activeSessionId.value, payload.sessionId)) return false;
-    downloadCount.value = payload.count;
+    downloadCount.value = Math.max(downloadCount.value, payload.count);
     lastBytes.value = payload.sizeBytes;
     return true;
   }
@@ -164,11 +226,12 @@ export const useShareStore = defineStore('share', () => {
     info.value = null;
     downloadCount.value = 0;
     lastBytes.value = 0;
+    activeDownloads.value = 0;
     return true;
   }
 
   return {
-    status, info, downloadCount, lastBytes, lastError, activeSessionId,
-    start, stop, onDownloaded, onStopped,
+    status, info, downloadCount, lastBytes, lastError, activeSessionId, activeDownloads, portOwners,
+    start, stop, onDownloaded, onStopped, onActivity, inspectPort, releasePort,
   };
 });

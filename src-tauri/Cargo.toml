@@ -1,6 +1,6 @@
 [package]
 name = "wonderful-ui"
-version = "0.12.0"
+version = "0.13.0"
 authors = ["WizisCool", "murainy", "WonderfulUI Contributors"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/nightx521/wonderfulUI"
@@ -35,10 +35,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 rayon = "1"
 # 跨设备"快传"分享：内嵌 HTTP server + 二维码生成。
-# - tiny_http: 零 transitive 同步 HTTP server，单文件 ~150KB 编译增量
 # - qrcode: 成熟 QR 库，生成 SVG 字符串给前端直接渲染
 # - rand: token 生成（256 位熵 base64url）
-tiny_http = "0.12"
 qrcode = "0.14"
 rand = "0.8"
 base64 = "0.22"
@@ -70,4 +68,7 @@ windows = { version = "0.61", features = [
   "Win32_System_Threading",
   "Win32_System_Variant",
   "Win32_NetworkManagement_WindowsFirewall",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_Networking_WinSock",
+  "Win32_Security",
 ] }

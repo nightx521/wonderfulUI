@@ -1,124 +1,97 @@
 <div align="center">
-  <img src="packages/gui/src/assets/logo.svg" width="128" height="128" alt="WonderfulUI Logo">
+  <img src="packages/gui/src/assets/logo.svg" width="112" height="112" alt="WonderfulUI">
   <h1>WonderfulUI</h1>
   <p>Windows 无畏契约个人高光资料库</p>
-  <p>把散落在本机的高光整理起来，随时查找和回看。</p>
-  <p>
-    <a href="LICENSE">
-      <img src="https://img.shields.io/badge/License-GPL--3.0--or--later-blue?style=flat" alt="License: GPL-3.0-or-later">
-    </a>
-    <a href="https://github.com/nightx521/wonderfulUI/releases">
-      <img src="https://img.shields.io/badge/Platform-Windows%20x64-0078D4?style=flat" alt="Platform: Windows x64">
-    </a>
-  </p>
+  <p>找到对局，回看高光，分享精彩时刻。</p>
+  <a href="https://github.com/nightx521/wonderfulUI/releases">下载安装包</a> ·
+  <a href="docs/TROUBLESHOOTING.md">使用帮助</a> ·
+  <a href="CONTRIBUTING.md">参与开发</a>
 </div>
 
----
+## 功能
 
-WonderfulUI 把已经生成在电脑里的无畏契约高光整理成一个本地资料库。你可以按账户和
-对局查找视频，直接播放、查看事件时间轴、截图，或把当前视频快传到同一局域网的设备。
-回看时不需要启动游戏或录制客户端。
+- **整理对局**：管理多个账户，按英雄、地图、模式、胜负、日期、MVP/SVP 和个人表现筛选。
+- **查看战绩**：显示来源记录中的段位、KDA、四杀和五杀时刻。
+- **回看视频**：内置播放器、击杀与死亡事件跳转、逐帧查看和画面截图。
+- **迁移历史**：导入旧电脑的对局数据与视频，按来源设备筛选，重复对局合并展示。
+- **局域网快传**：手机扫码下载当前视频；关闭时释放端口，下载未完成时先确认。
+- **覆盖更新**：保留资料和设置，可选择代理加速或 GitHub 直连。
 
-## 能做什么
+## 下载与使用
 
-- 整理多个本地账户，调整顺序并设置应用内显示名称。
-- 按搜索词、英雄、地图、模式、房间类型、胜负/平局、视频类型、MVP/SVP/其他、日期、击杀和 KDA 筛选对局。房间类型可选全部、自定义或非自定义；其他成就包含普通和缺少记录的对局。
-- 竞技对局显示记录中的段位与本地图标，区分未定级和未知；四杀、五杀时刻用不同颜色标签显示，可同时出现。同类多个视频只显示一个标签。
-- 在应用内播放视频，按击杀和死亡事件跳转，并支持预卷播放。
-- 截取当前画面，或生成临时二维码把视频传到同一局域网的设备。
-- 查看账户、对局和视频概览，按需增量刷新或全量重建本地索引。
-- 导入旧电脑的 WonderfulDb 和已复制的视频，预览后写入资料库；按本机或导入设备筛选。
+在 [Releases](https://github.com/nightx521/wonderfulUI/releases) 下载
+`WonderfulUI_<version>_x64-setup.exe`，支持 Windows 10/11 x64。
+更新时直接运行新版安装包，沿用原目录覆盖安装即可。
 
-WonderfulUI 只整理和读取已有高光，不会修改 ACLOS 内容。目前也不提供高光删除或编辑、
-资料库导出或备份、切换本机扫描目录、便携版和云同步。
+### 本机高光
 
-## 下载与首次使用
+先使用腾讯“无畏时刻”生成高光，再打开 WonderfulUI。应用会自动读取本机数据，
+你可以在左侧选择账户，筛选对局并播放视频。回看时无需启动游戏。
 
-从 [Releases](https://github.com/nightx521/wonderfulUI/releases) 下载最新的 Windows x64
-NSIS 安装程序：
-
-```text
-WonderfulUI_<version>_x64-setup.exe
-```
-
-目前没有 MSI 或解压即用版本。
-
-高光来自腾讯 ACLOS/“无畏时刻”。请先让它在本机生成过高光，WonderfulUI 会读取默认
-目录：
+本机数据位置：
 
 ```text
 %USERPROFILE%\AppData\Roaming\ACLOS\WonderfulDb
 ```
 
-`WonderfulDb` 和可选的 `snapshot<openid>` 始终按只读数据处理。本机扫描使用上述默认目录。
-迁移旧电脑数据时，在“设置 → 资料库 → 导入旧电脑数据”选择拷贝的 WonderfulDb 文件夹，
-再选择视频在当前电脑的文件夹，检查预览后确认导入。首次使用页面也提供这个入口。
-导入历史在后续扫描和重启后保留；重复对局合并显示。仅复制视频无法恢复对局信息。
-没有发现高光、视频被移动或网络盘未挂载时，请查看
-[故障排查](docs/TROUBLESHOOTING.md)。
+数据文件保持只读。WonderfulUI 自己的索引、设置和日志保存在
+`%LOCALAPPDATA%\wonderful-ui\`。
 
-## 网络和本地数据
+### 从旧电脑迁移
 
-- 高光索引、账户偏好和诊断日志保存在 `%LOCALAPPDATA%\wonderful-ui\`。
-- 当前代码没有遥测、账号同步或后台上传。
-- 主界面显示后检查项目更新，默认通过 github.murainy.com 加速，也可在“关于”的更新按钮右侧选择 GitHub 直连；选择会保存。版本信息和安装包下载使用同一方式，并校验更新签名。
-- 手动运行新版 NSIS 安装器也可沿用原目录覆盖升级。
-- 快传只在播放器中由用户主动开启。它会在本机临时监听 `22357/TCP`，用带令牌的
-  局域网地址提供当前视频下载。
-- 资料库浏览读取本地索引和随包资源；更新、快传和用户打开的外部网站链接会使用网络。
+1. 从旧电脑复制 `WonderfulDb` 文件夹和对应的视频文件。
+2. 打开“设置 → 资料库 → 导入旧电脑数据”。
+3. 分别选择复制的数据文件夹和视频在当前电脑的位置。
+4. 检查预览后确认导入。
 
-## 从源码运行
+导入记录会保留在资料库中。对局信息来自数据文件，仅有视频时无法还原完整战绩。
 
-桌面端面向 Windows 10/11 x64。开发环境还需要：
+### 快传到手机
 
-- [Bun](https://bun.sh) 1.3.14，版本由 `.bun-version` 固定；
-- [Rust](https://rustup.rs) 1.88.0，版本由 `rust-toolchain.toml` 固定；
-- Tauri 2 所需的 Windows SDK 和 WebView2 环境。
+电脑和手机连接同一局域网，在播放器中点击“快传”，用手机扫描二维码下载。
+关闭二维码会停止服务；仍有设备正在下载时，可以继续等待或确认中断。
+遇到端口冲突时，按提示处理占用程序后重试。
 
-安装依赖并运行检查：
+找不到高光、视频无法播放或快传无法连接时，查看[故障排查](docs/TROUBLESHOOTING.md)。
+
+## 开发
+
+技术栈：Tauri 2、Vue 3、Pinia、Rust 和 SQLite。
+Windows 桌面开发使用 Bun **1.3.14**、Rust **1.88.0**，并安装
+Tauri 所需的 Windows SDK 与 WebView2 开发环境。
 
 ```bash
 git clone https://github.com/nightx521/wonderfulUI.git
-cd WonderfulUI
-
+cd wonderfulUI
 bun install --frozen-lockfile
-bun run typecheck
-bun run test:all
-bun run assets:check
+bun run dev
 ```
 
-只查看使用固定 mock 数据的前端界面：
+使用固定示例数据预览前端：
 
 ```bash
 bun run dev:browser
 ```
 
-在 Windows 上运行桌面开发壳或构建 NSIS 安装程序：
+检查与构建：
 
 ```bash
-bun run dev
+bun run typecheck
+bun run test:all
+bun run assets:check
+cargo test --manifest-path src-tauri/Cargo.toml --lib
 bun run build
 ```
 
-本地构建产物位于 `target/release/bundle/nsis/`。浏览器 mock、macOS 类型检查和 Vite
-构建不能替代 Windows WebView2、安装器或真实 ACLOS 数据验证。更多开发说明见
-[贡献指南](CONTRIBUTING.md)。
+安装包输出到 `target/release/bundle/nsis/`。签名构建需要配置
+`TAURI_SIGNING_PRIVATE_KEY`；具体流程见[更新与安装](docs/UPDATER.md)。
+更多信息见[贡献指南](CONTRIBUTING.md)、[架构说明](docs/ARCHITECTURE.md)
+和[文档索引](docs/README.md)。
 
-## 文档
+## 关于
 
-- [文档索引](docs/README.md)
-- [故障排查](docs/TROUBLESHOOTING.md)
-- [贡献指南](CONTRIBUTING.md)
-- [安全策略](SECURITY.md)
-- [贡献者公约](CODE_OF_CONDUCT.md)
+原作者：© 2026 [WizisCool](https://github.com/WizisCool/WonderfulUI)。
+二次开发：© 2026 murainy。
 
-## 许可与声明
-
-WonderfulUI 使用 [GNU General Public License v3.0 or later](LICENSE)（`GPL-3.0-or-later`）发布。
-
-原作者：© 2026 WizisCool；二次开发：© 2026 murainy。原项目和许可说明见 [NOTICE.md](NOTICE.md)。
-当前开发仓库暂为私密仓库；匿名更新需仓库公开且发布对应版本。向他人分发本修改版安装包时，须按 GPL 向接收者提供对应版本源码；
-私密开发仓库本身不替代源码提供安排。
-
-本项目与 Riot Games、腾讯、ACLOS、WeGame 或无畏契约官方没有隶属关系。游戏名称、
-标识和相关内容归各自权利人所有。
+项目采用 [GPL-3.0-or-later](LICENSE)，素材来源和版权说明见 [NOTICE.md](NOTICE.md)。
+游戏名称、标识与相关素材归各自权利人所有；本项目与游戏官方无隶属关系。

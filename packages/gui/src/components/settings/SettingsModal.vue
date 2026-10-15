@@ -289,7 +289,7 @@
                 <WIcon icon="ph:caret-down" :size="12" aria-hidden="true" />
               </div>
             </div>
-            <span class="settings-update-channel">{{ update.channel === 'proxy' ? '代理加速 · github.murainy.com' : 'GitHub直连' }}</span>
+            <span class="settings-update-channel">{{ update.channel === 'proxy' ? '代理加速' : 'GitHub直连' }}</span>
           </div>
         </div>
       </template>

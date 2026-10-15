@@ -143,6 +143,7 @@ jobs:
       # semantics live in docs/UPDATER.md. We assume the v2 NSIS product
       # layout is <productName>_<version>_x64-setup.exe(.sig).
       - name: Generate latest.json
+        id: release_metadata
         shell: pwsh
         run: |
           $nsisDir = "target/release/bundle/nsis"
@@ -192,6 +193,11 @@ jobs:
           }
 
           $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$($setupExe.Name)"
+          $isPreview = $entry.prerelease -eq $true
+          "prerelease=$($isPreview.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          $releaseName = if ($isPreview) { "$version Pre" } else { "WonderfulUI $tag" }
+          "name=$releaseName" >> $env:GITHUB_OUTPUT
+          Set-Content -Path "release-notes.md" -Value $notes -Encoding utf8
           $pubDate = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
 
           $latest = [ordered]@{
@@ -220,7 +226,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: false
-          generate_release_notes: true
+          prerelease: ${{ steps.release_metadata.outputs.prerelease }}
+          name: ${{ steps.release_metadata.outputs.name }}
+          body_path: release-notes.md
           files: |
             target/release/bundle/nsis/*.exe
             target/release/bundle/nsis/*.exe.sig

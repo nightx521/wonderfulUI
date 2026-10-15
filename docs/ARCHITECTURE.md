@@ -120,7 +120,8 @@ Windows reparse points。文件名、大小和路径后缀必须得到唯一候�
 - `open_external_url`：只允许明确的 HTTPS GitHub/许可证地址；
 - `cache_asset(s)`：保留的兼容资源缓存边界，只允许固定资源类型和允许的 HTTPS 来源；
   当前 canonical 地图、英雄和模式资源由仓库构建，正常扫描通常不产生 CDN 下载；
-- `start_share_server`/`stop_share_server`/`share_server_status`：见下文快传边界。
+- `start_share_server`/`stop_share_server`/`share_server_status`：见下文快传边界；
+- `inspect_share_port`/`release_share_port(ticket)`：诊断固定快传端口并凭短期原生票据结束符合条件的占用程序。
 
 当前应用没有遥测、账号同步或后台上传 command。更新通过 Rust updater 读取版本与下载签名安装包，
 不发送资料库内容。应用内项目链接由外链边界校验后打开。
@@ -133,9 +134,17 @@ Windows reparse points。文件名、大小和路径后缀必须得到唯一候�
 - 随机生成 URL-safe token，路径为 `/w/<token>`；
 - QR URL 使用启动时选定的 LAN IPv4；Host 必须匹配 localhost、loopback 或该 LAN IP；
 - 传输完成后才计数并发出 `wui://share_downloaded`；
-- 前端模态挂载时启动、卸载时停止；Rust 的 3 分钟 idle timeout 是兜底；
+- 直接持有非阻塞 TCP listener，最多 4 个连接、8 KB 请求头；保留 token、Host 和 GET 校验；
+- 关闭先查询并原子检查活动下载，未完成时用户可继续或确认中断；非阻塞发送支持取消；
+- 会话启动/关闭串行，停止等待线程退出与 listener 释放后返回；前端新启动等待旧关闭确认；
+- 前端模态挂载时启动、卸载时兜底清理；3 分钟无有效活动时关闭，下载进行中不判为空闲；
 - session 使用 UUID v4，旧 session 的 stop/event 不能影响替代服务；
 - 关闭服务不会立即删除持久防火墙规则，完整卸载才清理规则。
+
+Windows 端口诊断只查询 22357/TCP 的 IPv4/IPv6 listener。结束操作使用单次、120 秒有效的
+后端票据，再次核对端口归属、进程创建时间、映像路径、同用户和非关键状态；不提升权限。
+系统目录、游戏/客户端/反作弊及本应用进程仅显示恢复建议。使用绑定身份的原生进程句柄，
+防止端口变化或 PID 重用导致结束错误程序。
 
 Windows NSIS 安装、覆盖安装和安装器 `/UPDATE` 会幂等配置名为
 `WonderfulUI Quick Share` 的窄范围入站规则：已安装 exe、TCP 22357、LocalSubnet。规则
