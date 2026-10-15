@@ -156,7 +156,10 @@ jobs:
           $version = $tauriConf.version
           $expectedTag = "v$version"
           $tag = $env:GITHUB_REF_NAME
-          if ($tag -ne $expectedTag) {
+          $versions = Get-Content "versions.json" -Raw | ConvertFrom-Json
+          $entry = $versions.releases."$expectedTag"
+          $previewTag = $entry.prerelease -eq $true -and $tag -match ("^" + [regex]::Escape($expectedTag) + "-pre\.[1-9]\d*$")
+          if ($tag -ne $expectedTag -and -not $previewTag) {
             Write-Error "Release tag '$tag' does not match configured version '$expectedTag'"
             exit 1
           }
@@ -174,7 +177,7 @@ jobs:
           $notes = $null
           if (Test-Path "versions.json") {
             $versions = Get-Content "versions.json" -Raw | ConvertFrom-Json
-            $entry = $versions.releases."$tag"
+            $entry = $versions.releases."$expectedTag"
             if ($entry) { $notes = $entry.notes }
           }
           if ([string]::IsNullOrWhiteSpace($notes)) {

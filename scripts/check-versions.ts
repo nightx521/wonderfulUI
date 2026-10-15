@@ -21,18 +21,20 @@ function check(label: string, actual: string, expected: string) {
 
 const tauriConf = readJson(join(ROOT, 'src-tauri', 'tauri.conf.json'));
 const expected = tauriConf.version;
+const versionsJson = readJson(join(ROOT, 'versions.json'));
 console.log(`\nCanonical version (tauri.conf.json): ${expected}\n`);
 
 const tagMismatch = releaseTagMismatch(
   expected,
   process.env.GITHUB_REF_TYPE,
   process.env.GITHUB_REF_NAME,
+  versionsJson.releases?.[`v${expected}`]?.prerelease === true,
 );
 if (tagMismatch) {
   console.error(`  FAIL GitHub release ref: ${tagMismatch}`);
   errors++;
 } else if (process.env.GITHUB_REF_TYPE === 'tag') {
-  console.log(`  OK   GitHub release tag v${expected}`);
+  console.log(`  OK   GitHub release tag ${process.env.GITHUB_REF_NAME}`);
 }
 
 // tauri.conf.json
@@ -66,7 +68,6 @@ const appVer = versionTs.match(/const APP_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1] 
 check('packages/gui/src/utils/version.ts APP_VERSION', appVer, expected);
 
 // versions.json
-const versionsJson = readJson(join(ROOT, 'versions.json'));
 check('versions.json current', versionsJson.current, expected);
 
 // cli test hardcoded version

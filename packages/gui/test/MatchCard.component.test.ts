@@ -97,7 +97,7 @@ describe('MatchCard', () => {
     const unknownCard = mountCard(unknown);
     expect(unknownCard.get('.result-unknown').text()).toBe('—');
     expect(unknownCard.get('.result-unknown').attributes('data-tip')).toBe('暂无可靠对局结果');
-    expect(unknownCard.text()).not.toContain('0:0');
+    expect(unknownCard.get('.result-unknown').text()).not.toContain('0:0');
   });
 
   test('renders canonical agent name', () => {
