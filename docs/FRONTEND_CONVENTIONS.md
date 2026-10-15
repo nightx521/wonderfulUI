@@ -1,6 +1,6 @@
 # Frontend Conventions
 
-This document holds GUI implementation conventions that are too detailed for `AGENTS.md`. Follow `DESIGN.md` and `PRODUCT.md` first for product and visual intent.
+This document describes GUI implementation conventions. Follow `DESIGN.md` and `PRODUCT.md` first for product and visual intent.
 
 ## Rendering Model
 

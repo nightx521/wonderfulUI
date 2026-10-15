@@ -9,7 +9,7 @@ on:
 # Tag builds cannot *create* caches that later tags reliably reuse (GHA caches
 # are branch-scoped; only the default branch is a shared source). The
 # cache-warm workflow on main populates the same rust-cache / bun keys so
-# release jobs restore a warm target/. See docs/AGENT_WORKFLOW.md.
+# release jobs restore a warm target/. See cache-warm.yml.
 #
 # Timing (v0.1.8 warm Windows runner, ~13 min sequential):
 #   setup/caches ~2 min | cargo test debug ~2.5 min | tauri build ~8 min

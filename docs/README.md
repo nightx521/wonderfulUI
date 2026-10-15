@@ -13,10 +13,7 @@
 - [Pull Request 模板](../.github/PULL_REQUEST_TEMPLATE.md)
 - [Issue 模板](../.github/ISSUE_TEMPLATE/)
 
-## 维护者与 Agent
-
-- [AGENTS.md](../AGENTS.md)：规则入口和事实索引。
-- [Agent 工作流](AGENT_WORKFLOW.md)：分支、检查、提交与发布边界。
+## 开发与维护
 - [版本管理](../VERSIONING.md)
 - [产品定义](../PRODUCT.md)
 - [设计系统](../DESIGN.md)

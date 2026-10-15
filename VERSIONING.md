@@ -46,8 +46,8 @@ git push origin vX.Y.Z
 3. tag 发布时，`publish` 创建 GitHub Release，并附上 Windows x64 NSIS 安装器、.exe.sig 和 latest.json。
 
 发布文件为 `WonderfulUI_<version>_x64-setup.exe`、配套 `.exe.sig` 和 `latest.json`。
-GitHub Actions 使用本修改版自己的签名 secret。私密仓库中的文件仅向获授权用户开放，
-公开更新需仓库可匿名访问并已发布版本。更新线路与覆盖安装约定见 [更新与安装](docs/UPDATER.md)。
+GitHub Actions 使用本修改版自己的签名 secret。正式版本通过公开的 GitHub Releases 分发。
+更新线路与覆盖安装约定见 [更新与安装](docs/UPDATER.md)。
 
 ## 版本说明
 

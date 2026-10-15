@@ -1628,7 +1628,7 @@ function toggleFullscreen() {
 
 // Keyboard
 function onKeydown(e: KeyboardEvent) {
-  // AGENTS.md: only handle keys while the player is actually open; otherwise
+  // Only handle keys while the player is actually open; otherwise
   // a stale listener can swallow events from the underlying app.
   if (!player.isOpen) return;
   // This listener is mounted before later settings/update/share dialogs.
