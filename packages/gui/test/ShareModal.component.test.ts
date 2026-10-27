@@ -19,6 +19,25 @@ import ShareModal from '../src/components/share/ShareModal.vue';
 import { useShareStore } from '../src/stores/share.ts';
 
 describe('ShareModal async lifecycle', () => {
+  test('failed forced stop restores download counters and session state', async () => {
+    invokeMock.mockReset();
+    invokeMock.mockRejectedValue('fixture stop failure');
+    const pinia = createPinia();
+    const store = useShareStore(pinia);
+    store.activeSessionId = 'fixture-session';
+    store.info = { sessionId: 'fixture-session', port: 22357, token: 'fixture', url: 'http://127.0.0.1:22357/w/fixture', lanIp: '127.0.0.1', qrSvg: '<svg/>', videoName: 'clip.mp4', videoSize: 10, startedAtUnix: 1 };
+    store.status = 'running';
+    store.downloadCount = 3;
+    store.lastBytes = 10;
+    store.activeDownloads = 1;
+    store.portOwners = [{ pid: 42, name: 'fixture.exe', ticket: null, reason: null }];
+    expect(await store.stop(true)).toBe(false);
+    expect(store.activeSessionId).toBe('fixture-session');
+    expect(store.downloadCount).toBe(3);
+    expect(store.lastBytes).toBe(10);
+    expect(store.activeDownloads).toBe(1);
+    expect(store.portOwners[0]?.name).toBe('fixture.exe');
+  });
   test('a port conflict stays open and ending its program requires a separate confirmation', async () => {
     listenMock.mockReset();
     invokeMock.mockReset();

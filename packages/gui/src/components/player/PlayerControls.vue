@@ -72,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue';
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
 import WIcon from '../common/WIcon.vue';
 import ProgressBar from './ProgressBar.vue';
 import { SHARE_ICON, SHARE_ICON_SIZE } from '../../share/icons.ts';
@@ -202,9 +202,10 @@ function scheduleHide() {
   if (hideTimer) clearTimeout(hideTimer);
   if (!props.playing || progressDragging) return;
   hideTimer = setTimeout(() => {
-    if (controlsEl.value) controlsEl.value.classList.add('is-hidden');
+    if (props.playing && !progressDragging && controlsEl.value) controlsEl.value.classList.add('is-hidden');
   }, 3000);
 }
+watch(() => props.playing, (playing) => { if (!playing) show(); });
 
 function onFullscreenChange() {
   isFullscreen.value = !!document.fullscreenElement;

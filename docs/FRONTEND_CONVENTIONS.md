@@ -7,6 +7,8 @@ This document describes GUI implementation conventions. Follow `DESIGN.md` and `
 TopBar searches library metadata. Account scope, categories and numeric/date ranges
 remain independent. Facets ignore text queries to keep temporary searches from
 pruning selections. Persisted filters are sanitized to the current supported keys.
+Numeric range inputs retain their editing draft until blur or Enter, then validate
+and commit. Do not reformat partial decimal input or erase a leading zero while typing.
 
 Room type is a separate single-choice chip section after mode and before result:
 All clears the condition; Custom and Non-custom select one category. Derive it
@@ -92,6 +94,10 @@ While update is downloading/installing, `Ctrl+W` is a no-op (do not dismiss inst
   freezes focus on interior controls because native Tab movement never runs.
 - PlayerHost retains its existing open/close focus restoration, but its Tab
   boundary logic must go through the same `trapDialogTab()` helper.
+- Toggle shortcuts (Space, M, F) ignore key repeat. Focused volume sliders and
+  event markers own their applicable keys; Escape still belongs to the top layer.
+- Buffer recovery respects the latest play/pause intent. A pause during buffering
+  stays paused; screenshot holds and seek operations retain their existing guards.
 
 ### Match list selection + context menu
 

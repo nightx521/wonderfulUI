@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import PlayerControls from '../src/components/player/PlayerControls.vue';
 
@@ -20,6 +20,18 @@ function mountControls(volumeLevel = 40) {
 }
 
 describe('PlayerControls volume slider', () => {
+  test('pausing before the hide deadline keeps the controls visible', async () => {
+    vi.useFakeTimers();
+    const wrapper = mountControls();
+    try {
+      await wrapper.setProps({ playing: true });
+      await wrapper.get('.player-controls').trigger('mouseleave');
+      await vi.advanceTimersByTimeAsync(1000);
+      await wrapper.setProps({ playing: false });
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wrapper.get('.player-controls').classes()).not.toContain('is-hidden');
+    } finally { wrapper.unmount(); vi.useRealTimers(); }
+  });
   test('ignores pointer input while responsive layout gives the track zero width', async () => {
     const wrapper = mountControls();
     const track = wrapper.get('.player-vol-track');

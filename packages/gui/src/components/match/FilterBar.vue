@@ -75,7 +75,8 @@
               :placeholder="row.placeholderLo"
               aria-label="最小值"
               :inputmode="row.isFloat ? 'decimal' : 'numeric'"
-              :value="row.loStr"
+              :value="inputValue(row.key, 'lo', row.loStr)"
+              @focus="beginInput(row.key, 'lo', ($event.target as HTMLInputElement).value)"
               @input="onNumInput(row.key, 'lo', ($event.target as HTMLInputElement).value)"
               @blur="onNumBlur(row.key, 'lo', ($event.target as HTMLInputElement).value)"
               @keydown.enter="($event.target as HTMLInputElement).blur()"
@@ -90,7 +91,8 @@
               :placeholder="row.placeholderHi"
               aria-label="最大值"
               :inputmode="row.isFloat ? 'decimal' : 'numeric'"
-              :value="row.hiStr"
+              :value="inputValue(row.key, 'hi', row.hiStr)"
+              @focus="beginInput(row.key, 'hi', ($event.target as HTMLInputElement).value)"
               @input="onNumInput(row.key, 'hi', ($event.target as HTMLInputElement).value)"
               @blur="onNumBlur(row.key, 'hi', ($event.target as HTMLInputElement).value)"
               @keydown.enter="($event.target as HTMLInputElement).blur()"
@@ -326,25 +328,20 @@ function emitRange(key: RangeKey, lo: number | null, hi: number | null) {
   filterStore.setFilters(patch);
 }
 
+const editingInput = ref<{ key: RangeKey; which: string; value: string } | null>(null);
+function beginInput(key: RangeKey, which: string, value: string) {
+  editingInput.value = { key, which, value };
+}
+function inputValue(key: RangeKey, which: string, committed: string): string {
+  const draft = editingInput.value;
+  return draft?.key === key && draft.which === which ? draft.value : committed;
+}
 function onNumInput(key: RangeKey, which: string, rawValue: string) {
-  const kind = NUMERIC_KIND[key] ?? 'int';
-  // Only update immediately for float; int/seconds/bytes update on blur
-  if (kind === 'float') {
-    const [lo, hi] = filterStore.filters[key];
-    const v = parseInputValue(kind, rawValue);
-    if (which === 'lo') emitRange(key, v, hi);
-    else emitRange(key, lo, v);
-  }
-  // For int, also update immediately
-  if (kind === 'int') {
-    const [lo, hi] = filterStore.filters[key];
-    const v = parseInputValue(kind, rawValue);
-    if (which === 'lo') emitRange(key, v, hi);
-    else emitRange(key, lo, v);
-  }
+  beginInput(key, which, rawValue);
 }
 
 function onNumBlur(key: RangeKey, which: string, rawValue: string) {
+  editingInput.value = null;
   const kind = NUMERIC_KIND[key] ?? 'int';
   const [lo, hi] = filterStore.filters[key];
   const v = parseInputValue(kind, rawValue);
@@ -353,6 +350,7 @@ function onNumBlur(key: RangeKey, which: string, rawValue: string) {
 }
 
 function onNumClear(key: RangeKey) {
+  if (editingInput.value?.key === key) editingInput.value = null;
   const patch: Partial<FilterState> = { [key]: [null, null] };
   filterStore.setFilters(patch);
 }

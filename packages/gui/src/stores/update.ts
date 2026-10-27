@@ -168,6 +168,7 @@ export const useUpdateStore = defineStore('update', () => {
   /** 并发 check 去重：手动连点 / 启动+手动重叠时共用一个 promise。 */
   let checkInflight: Promise<CheckOutcome> | null = null;
   let checkInflightSilent = false;
+  const notifiedManualJoins = new WeakSet<Promise<CheckOutcome>>();
 
   function setChannel(next: UpdateChannel) {
     if ((next !== 'proxy' && next !== 'github') || next === channel.value
@@ -421,6 +422,9 @@ export const useUpdateStore = defineStore('update', () => {
       if (!silent) {
         if (outcome === 'available' && status.value === 'available') {
           modalOpen.value = true;
+        } else if (joinedSilentCheck && outcome === 'uptodate' && !notifiedManualJoins.has(inflight)) {
+          notifiedManualJoins.add(inflight);
+          useUiStore().showToast('已是最新版本', 'ok');
         } else if (joinedSilentCheck && outcome === 'failed') {
           // A manual click must not inherit the silent boot check's error
           // suppression. Once the shared silent transport fails, retry as a

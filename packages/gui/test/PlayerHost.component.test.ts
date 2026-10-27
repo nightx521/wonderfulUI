@@ -71,6 +71,16 @@ function mountPlayer() {
 }
 
 describe('PlayerHost volume boundaries', () => {
+  test('focused volume slider handles its arrow key once', async () => {
+    localStorage.setItem('wui:player.vol', '40');
+    const wrapper = mountPlayer();
+    await nextTick();
+    const writes = vi.spyOn(localStorage, 'setItem');
+    try {
+      await wrapper.get('.player-vol-track').trigger('keydown', { key: 'ArrowUp' });
+      expect(writes.mock.calls.filter(([key]) => key === 'wui:player.vol')).toEqual([['wui:player.vol', '45']]);
+    } finally { writes.mockRestore(); wrapper.unmount(); }
+  });
   test('restores a persisted zero volume instead of replacing it with 100', async () => {
     localStorage.setItem('wui:player.vol', '0');
     localStorage.setItem('wui:player.muted', '0');
@@ -247,6 +257,20 @@ describe('PlayerHost context menu', () => {
     expect(wrapper.find('.player-backdrop').exists()).toBe(true);
   });
 
+  test('Escape dismisses only the open submenu before the root menu', async () => {
+    await wrapper.get('.player-stage').trigger('contextmenu', { clientX: 120, clientY: 80 });
+    const menu = document.querySelector('.player-context-menu')!;
+    const shot = [...menu.querySelectorAll('[role="menuitem"]')].find(el => el.textContent?.includes('截图'))!;
+    shot.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    await nextTick();
+    expect(menu.querySelector('.player-context-flyout')).not.toBeNull();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await nextTick();
+    expect(menu.classList.contains('is-closing')).toBe(false);
+    expect(menu.querySelector('.player-context-item-parent')?.getAttribute('aria-expanded')).toBe('false');
+    expect((menu.querySelector('.player-context-flyout') as HTMLElement).style.display).toBe('none');
+  });
+
   test('higher app dialogs block player Escape hotkeys', async () => {
     const settingsLayer = document.createElement('div');
     settingsLayer.className = 'settings-modal-backdrop';
@@ -329,6 +353,73 @@ describe('PlayerHost context menu', () => {
     // Either the event is stopped, or stage handler no-ops while closing —
     // menu must remain in closing/dismiss path, not re-open play side effects.
     expect(stopped || document.querySelector('.player-context-menu')).toBeTruthy();
+  });
+});
+
+describe('PlayerHost playback intent', () => {
+  test.each([100, 350])('pause during a %i ms buffering wait is respected by canplay', async (wait) => {
+    vi.useFakeTimers();
+    const wrapper = mountPlayer();
+    try {
+      const video = wrapper.get('video').element as HTMLVideoElement;
+      let paused = false;
+      Object.defineProperty(video, 'paused', { configurable: true, get: () => paused });
+      video.play = vi.fn(async () => { paused = false; });
+      video.pause = vi.fn(() => { paused = true; video.dispatchEvent(new Event('pause')); });
+      video.dispatchEvent(new Event('play'));
+      video.dispatchEvent(new Event('waiting'));
+      await vi.advanceTimersByTimeAsync(wait);
+      await wrapper.get('.player-ctrl-play').trigger('click');
+      video.dispatchEvent(new Event('canplay'));
+      await nextTick();
+      expect(video.play).not.toHaveBeenCalled();
+      expect(wrapper.get('.player-ctrl-play').attributes('aria-label')).toBe('播放');
+    } finally { wrapper.unmount(); vi.useRealTimers(); }
+  });
+
+  test('buffer recovery continues playback when no pause was requested', async () => {
+    vi.useFakeTimers();
+    const wrapper = mountPlayer();
+    try {
+      const video = wrapper.get('video').element as HTMLVideoElement;
+      video.play = vi.fn(async () => {});
+      video.dispatchEvent(new Event('play'));
+      video.dispatchEvent(new Event('waiting'));
+      await vi.advanceTimersByTimeAsync(350);
+      video.dispatchEvent(new Event('canplay'));
+      expect(video.play).toHaveBeenCalledTimes(1);
+    } finally { wrapper.unmount(); vi.useRealTimers(); }
+  });
+
+  test('toggle hotkeys ignore repeats while a normal press still works', async () => {
+    const wrapper = mountPlayer();
+    const video = wrapper.get('video').element as HTMLVideoElement;
+    Object.defineProperty(video, 'paused', { configurable: true, value: true });
+    video.play = vi.fn(async () => {});
+    for (const key of [' ', 'm', 'f']) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key, repeat: true, bubbles: true }));
+    }
+    expect(video.play).not.toHaveBeenCalled();
+    expect(localStorage.getItem('wui:player.muted')).toBeNull();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    expect(video.play).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  test('seeking away from the last frame resumes from the selected position', async () => {
+    const wrapper = mountPlayer();
+    const video = wrapper.get('video').element as HTMLVideoElement;
+    Object.defineProperty(video, 'paused', { configurable: true, value: true });
+    Object.defineProperty(video, 'duration', { configurable: true, value: 30 });
+    video.currentTime = 30;
+    video.dispatchEvent(new Event('ended'));
+    video.currentTime = 10;
+    video.dispatchEvent(new Event('seeking'));
+    video.play = vi.fn(async () => {});
+    await wrapper.get('.player-ctrl-play').trigger('click');
+    expect(video.currentTime).toBe(10);
+    expect(video.play).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
   });
 });
 

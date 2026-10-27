@@ -59,6 +59,19 @@ function shot(overrides: Record<string, unknown> = {}): Record<string, unknown> 
 }
 
 describe('resolveClipEventState', () => {
+  test('quarantines blank numeric evidence instead of inventing zero', () => {
+    for (const empty of ['', '   ']) {
+      for (const field of ['KillerIsMe', 'KilledIsMe', 'GetShotRolePart']) {
+        const c = clip({ event_ext: shot({ [field]: empty }) });
+        const v = video('击杀集锦', c);
+        expect(resolveClipEventState(match([v]), v, v.rounds![0]!, c, c.clip_events[0]!, 0).kind).toBe('quarantined');
+      }
+      const c = clip({ event_ext: shot() });
+      c.clip_events[0]!.event_sTime = empty as unknown as number;
+      const v = video('击杀集锦', c);
+      expect(resolveClipEventState(match([v]), v, v.rounds![0]!, c, c.clip_events[0]!, 0)).toEqual({ kind: 'quarantined', reason: 'invalid-event-time' });
+    }
+  });
   test('uses event_sTime as the video timestamp for montage events', () => {
     const c = clip({ event_sTime: 130_000, event_ext: shot() });
     const v = video('击杀集锦', c, 140_000);

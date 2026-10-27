@@ -321,6 +321,7 @@ function onTabKey(e: KeyboardEvent) {
 const state = ref<PlayerState>('loading');
 const bufferingMode = ref<BufferingMode>('hidden');
 let stateBeforeSeek: PlayerState | null = null;
+let playbackIntent: 'playing' | 'paused' = 'playing';
 let lastSeekTime = 0;
 let bufferingTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1096,6 +1097,7 @@ function resetPlaybackSession(video: VideoItem | null): void {
   bufferingMode.value = 'hidden';
   stateBeforeSeek = null;
   lastSeekTime = 0;
+  playbackIntent = 'playing';
   currentTime.value = 0;
   duration.value = 0;
   lastBufferedPct.value = 0;
@@ -1238,11 +1240,19 @@ function togglePlay() {
   const v = videoRef.value;
   if (!v) return;
   // At end, play() alone often stays on the last frame — restart from 0.
-  if (state.value === 'ended') {
+  if (state.value === 'ended' && (!Number.isFinite(v.duration) || v.currentTime >= v.duration - 0.01)) {
     replay();
     return;
   }
-  if (v.paused) { v.play().catch(() => {}); } else { v.pause(); }
+  const shouldPause = state.value === 'buffering' ? playbackIntent === 'playing' : !v.paused;
+  playbackIntent = shouldPause ? 'paused' : 'playing';
+  stateBeforeSeek = playbackIntent;
+  if (shouldPause) {
+    v.pause();
+    onPause();
+  } else {
+    v.play().catch(() => {});
+  }
 }
 
 watch(showFrameStepper, (show) => {
@@ -1281,6 +1291,7 @@ function doClose() {
 function replay() {
   const v = videoRef.value;
   if (!v) return;
+  playbackIntent = 'playing';
   v.currentTime = 0;
   v.play().catch(() => {});
 }
@@ -1506,7 +1517,7 @@ function onCanPlay() {
     forceVideoPaused();
     return;
   }
-  const transition = canPlayTransition(state.value, stateBeforeSeek);
+  const transition = canPlayTransition(state.value, state.value === 'buffering' ? playbackIntent : stateBeforeSeek);
   if (transition.clearPendingBuffering) {
     clearBufferingTimer();
     bufferingMode.value = 'hidden';
@@ -1525,6 +1536,7 @@ function onPlay() {
     return;
   }
   clearBufferingTimer();
+  playbackIntent = 'playing';
   state.value = 'playing';
   bufferingMode.value = 'hidden';
   scheduleHide();
@@ -1536,7 +1548,8 @@ function onPlay() {
 }
 
 function onPause() {
-  if (state.value === 'buffering' && !screenshotHold) return;
+  playbackIntent = 'paused';
+  stateBeforeSeek = 'paused';
   clearBufferingTimer();
   bufferingMode.value = 'hidden';
   state.value = 'paused';
@@ -1545,10 +1558,11 @@ function onPause() {
 
 function onWaiting() {
   if (isDragging.value) return;
-  if (state.value !== 'playing') return;
+  if (state.value !== 'playing' || playbackIntent !== 'playing') return;
   stateBeforeSeek = state.value;
   clearBufferingTimer();
   bufferingTimer = setTimeout(() => {
+    if (state.value !== 'playing' || playbackIntent !== 'playing') return;
     state.value = 'buffering';
     bufferingMode.value = (Date.now() - lastSeekTime < SEEK_WINDOW_MS) ? 'dim-overlay' : 'spinner';
   }, BUFFERING_DEBOUNCE_MS);
@@ -1558,6 +1572,12 @@ function onSeeking() {
   if (state.value === 'loading') return;
   // Hold-step owns seeking; do not mark seek windows / dim overlay.
   if (frameHoldActive) return;
+  const video = videoRef.value;
+  if (state.value === 'ended' && video && video.currentTime < video.duration - 0.01) {
+    state.value = 'paused';
+    playbackIntent = 'paused';
+    showControls();
+  }
   if (state.value !== 'buffering') stateBeforeSeek = state.value;
   lastSeekTime = Date.now();
 }
@@ -1639,8 +1659,7 @@ function onKeydown(e: KeyboardEvent) {
   // capture listener). Still early-return here as a second guard.
   if (ctxMenu.value && !ctxMenuClosing.value) {
     if (e.key === 'Escape') {
-      e.preventDefault();
-      closeCtxMenu();
+      // The menu's document listener owns Escape, including one-level dismissal.
       return;
     }
     // Don't steal arrow keys / space while menu items are focused.
@@ -1651,12 +1670,18 @@ function onKeydown(e: KeyboardEvent) {
   const target = e.target instanceof HTMLElement ? e.target : null;
   const tag = target?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if (target?.closest('.player-vol-track') && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  if (target?.closest('.player-event-marker') && (e.key === ' ' || e.key === 'Enter')) return;
   // The progress slider handles its own arrow / page / home / end keys
   // (WAI-ARIA slider pattern). Skip those here to avoid double-seek.
   if (target?.closest('.player-progress-wrap')) {
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'PageUp' || e.key === 'PageDown' || e.key === 'Home' || e.key === 'End') return;
   }
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (e.repeat && (key === ' ' || key === 'm' || key === 'f')) {
+    e.preventDefault();
+    return;
+  }
   // Pointer hold owns continuous frame stepping. Any player hotkey yields
   // ownership so keyboard seeks / play do not race the seeked hold loop.
   if (frameHoldActive || frameHoldDelay != null) {

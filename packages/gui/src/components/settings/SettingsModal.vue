@@ -429,9 +429,7 @@ async function revealLogsDir() {
 
 watch(() => settings.isOpen, (open) => {
   if (open && settings.activeTab === 'library') {
-    if (!settings.statsData && !settings.statsLoading && !settings.statsError) {
-      settings.fetchLibraryStats();
-    }
+    void settings.refreshLibraryStats();
   }
   if (open && settings.activeTab === 'logs') {
     settings.fetchLogs();
@@ -439,15 +437,14 @@ watch(() => settings.isOpen, (open) => {
 });
 
 onMounted(() => {
-  if (settings.activeTab === 'library' && !settings.statsData && !settings.statsLoading && !settings.statsError) {
-    settings.fetchLibraryStats();
-  }
+  if (settings.isOpen && settings.activeTab === 'library') void settings.refreshLibraryStats();
   if (settings.activeTab === 'logs') {
     settings.fetchLogs();
   }
 });
 
 watch(() => settings.activeTab, (tab) => {
+  if (settings.isOpen && tab === 'library') void settings.refreshLibraryStats();
   if (tab === 'logs') {
     settings.fetchLogs();
   }

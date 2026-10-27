@@ -54,6 +54,26 @@ function mountFilter(overrides: { matches?: MatchRecord[]; filters?: Record<stri
 }
 
 describe('FilterBar', () => {
+  test('keeps fractional input drafts until blur and allows a leading zero', async () => {
+    const wrapper = mountFilter({ matches: [mkMatch('a', 'Cypher', 'Ascent', 0), mkMatch('a', 'Omen', 'Bind', 20)] });
+    const input = wrapper.get('[data-filter-key="kda"] input');
+    await input.trigger('focus');
+    await input.setValue('0');
+    expect((input.element as HTMLInputElement).value).toBe('0');
+    expect(useFilterStore().filters.kda).toEqual([null, null]);
+    await input.setValue('0.8');
+    expect((input.element as HTMLInputElement).value).toBe('0.8');
+    await input.trigger('blur');
+    expect(useFilterStore().filters.kda).toEqual([0.8, null]);
+    await input.trigger('focus');
+    await input.setValue('1');
+    expect((input.element as HTMLInputElement).value).toBe('1');
+    expect(useFilterStore().filters.kda).toEqual([0.8, null]);
+    await input.setValue('1.5');
+    await input.trigger('blur');
+    expect(useFilterStore().filters.kda).toEqual([1.5, null]);
+    wrapper.unmount();
+  });
   test('room type sits between mode and result with single selection and an all reset', async () => {
     const custom = { ...mkMatch(), mode: 'customgame', career: { game_mode: '团队乱斗' } };
     const regular = { ...mkMatch(), mode: 'hurm', career: { game_mode: '团队乱斗' } };

@@ -151,6 +151,10 @@ export const useShareStore = defineStore('share', () => {
   async function stop(force = true): Promise<boolean> {
     const sessionId = activeSessionId.value;
     const previousInfo = info.value;
+    const previousStats = {
+      downloadCount: downloadCount.value, lastBytes: lastBytes.value,
+      activeDownloads: activeDownloads.value, portOwners: portOwners.value,
+    };
     if (!force && sessionId !== null) {
       try {
         const result = await invoke<StopOutcome | undefined>('stop_share_server', { sessionId, force: false });
@@ -170,6 +174,10 @@ export const useShareStore = defineStore('share', () => {
       if (activeSessionId.value === null) {
         activeSessionId.value = sessionId;
         info.value = previousInfo;
+        downloadCount.value = previousStats.downloadCount;
+        lastBytes.value = previousStats.lastBytes;
+        activeDownloads.value = previousStats.activeDownloads;
+        portOwners.value = previousStats.portOwners;
         lastError.value = '快传关闭失败，请重试';
         status.value = 'error';
       }

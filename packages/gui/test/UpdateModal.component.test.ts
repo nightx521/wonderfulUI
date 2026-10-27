@@ -73,6 +73,24 @@ function mountModal(initialState: Record<string, unknown> = {}) {
 }
 
 describe('UpdateModal', () => {
+  test('manual callers joining a silent latest-version check get one toast and one request', async () => {
+    enableTauri();
+    checkMock.mockReset();
+    const w = mountModal({ status: 'idle', badge: false, update: null });
+    const store = useUpdateStore();
+    const toast = vi.spyOn(useUiStore(), 'showToast');
+    let complete!: (value: null) => void;
+    checkMock.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const silent = store.checkForUpdate(true);
+    const first = store.checkForUpdate(false);
+    const second = store.checkForUpdate(false);
+    complete(null);
+    await Promise.all([silent, first, second]);
+    expect(checkMock).toHaveBeenCalledTimes(1);
+    expect(toast).toHaveBeenCalledTimes(1);
+    expect(toast).toHaveBeenCalledWith('已是最新版本', 'ok');
+    w.unmount();
+  });
   beforeEach(() => {
     enableTauri();
     checkMock.mockReset();

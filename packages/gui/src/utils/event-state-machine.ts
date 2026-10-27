@@ -172,6 +172,7 @@ export function isWithinMatchWindow(eventTime: string, match: MatchRecord): bool
 }
 
 function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === 'string' && !value.trim()) return undefined;
   const n = typeof value === 'string' ? Number(value) : value;
   return typeof n === 'number' && Number.isFinite(n) ? n : undefined;
 }
