@@ -1,6 +1,6 @@
 {
   "$schema": "https://example.com/wonderful-ui/versions.schema.json",
-  "current": "1.0.0",
+  "current": "1.0.1",
   "min_supported": "0.1.0",
   "releases": {
     "v0.1.0": {
@@ -320,6 +320,19 @@
       "date": "2026-10-15",
       "prerelease": false,
       "notes": "WonderfulUI 1.0.0 首个正式版\n\n- 整理和回看无畏契约高光，按账号、来源设备、英雄、地图、模式与成就筛选对局。\n- 支持历史资料导入、视频预览、段位与多杀提示，以及局域网快传。\n- 提供代理加速与 GitHub 直连更新，支持覆盖升级并保留已有资料与设置。\n\n由 murainy 二次开发，保留原作者 WizisCool 版权，遵循 GPL-3.0-or-later。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v1.0.1": {
+      "tag": "v1.0.1",
+      "date": "2026-10-27",
+      "prerelease": false,
+      "notes": "WonderfulUI 1.0.1\n\n- 修复扫描卡顿、快照读取失败后补充信息丢失，以及部分空值字段导致账户读取失败的问题。\n- 保护异常数据下的已有索引，重复编号不再中断其他账户扫描。\n- 修复截图初始化、KDA 小数输入、缓冲暂停、快捷键和控制栏显示问题。\n- 改善更新检查反馈、资料库统计刷新和局域网快传稳定性。",
       "min_supported_version": "0.1.0",
       "assets": {
         "windows-x86_64": {

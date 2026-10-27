@@ -1,6 +1,6 @@
 [package]
 name = "wonderful-ui"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["WizisCool", "murainy", "WonderfulUI Contributors"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/nightx521/wonderfulUI"
