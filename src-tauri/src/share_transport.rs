@@ -161,9 +161,7 @@ pub fn run(
                         .remove(&id);
                 }));
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(15))
-            }
+            Err(e) if retryable_accept_error(e.kind()) => thread::sleep(Duration::from_millis(15)),
             Err(e) => break Err(format!("accept: {e}")),
         }
     };
@@ -174,6 +172,17 @@ pub fn run(
         let _ = worker.join();
     }
     result
+}
+
+fn retryable_accept_error(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::TimedOut
+    )
 }
 
 fn reject(socket: &mut TcpStream, code: &str) {
@@ -316,6 +325,21 @@ fn serve(socket: &mut TcpStream, config: &Config, control: &Control, notify: &No
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn accept_retries_connection_failures_but_not_listener_failures() {
+        for kind in [
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::WouldBlock,
+        ] {
+            assert!(retryable_accept_error(kind));
+        }
+        assert!(!retryable_accept_error(
+            std::io::ErrorKind::PermissionDenied
+        ));
+        assert!(!retryable_accept_error(std::io::ErrorKind::InvalidInput));
+    }
     struct Running {
         control: Arc<Control>,
         worker: Option<thread::JoinHandle<Result<StopReason, String>>>,

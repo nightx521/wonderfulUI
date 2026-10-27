@@ -64,7 +64,7 @@ mod windows {
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
         COINIT_APARTMENTTHREADED,
     };
-    use ::windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
+    use ::windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
     use ::windows::Win32::UI::Shell::{
         ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
     };
@@ -380,7 +380,7 @@ mod windows {
             ));
         }
 
-        let wait_result = unsafe { WaitForSingleObject(info.hProcess, INFINITE) };
+        let wait_result = unsafe { WaitForSingleObject(info.hProcess, 30_000) };
         if wait_result == WAIT_FAILED {
             let _ = unsafe { CloseHandle(info.hProcess) };
             return Err(HelperLaunchError::Failed(
@@ -390,7 +390,7 @@ mod windows {
         if wait_result != WAIT_OBJECT_0 {
             let _ = unsafe { CloseHandle(info.hProcess) };
             return Err(HelperLaunchError::Failed(format!(
-                "helper wait returned {wait_result:?}"
+                "防火墙设置未能及时完成，请稍后重试 ({wait_result:?})"
             )));
         }
 

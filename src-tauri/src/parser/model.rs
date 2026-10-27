@@ -5,12 +5,12 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 
-fn deser_null_as_empty_vec<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+fn deser_null_as_default<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
-    T: Deserialize<'de>,
+    T: Deserialize<'de> + Default,
 {
-    Option::<Vec<T>>::deserialize(d).map(Option::unwrap_or_default)
+    Option::<T>::deserialize(d).map(Option::unwrap_or_default)
 }
 
 fn deser_str_or_num<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
@@ -18,6 +18,9 @@ fn deser_str_or_num<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error>
     struct Visitor;
     impl<'de> de::Visitor<'de> for Visitor {
         type Value = String;
+        fn visit_unit<E: de::Error>(self) -> Result<String, E> {
+            Ok(String::new())
+        }
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             f.write_str("a string or number")
         }
@@ -45,6 +48,9 @@ fn deser_i64_or_str<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     struct Visitor;
     impl<'de> de::Visitor<'de> for Visitor {
         type Value = i64;
+        fn visit_unit<E: de::Error>(self) -> Result<i64, E> {
+            Ok(0)
+        }
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             f.write_str("an integer or integer string")
         }
@@ -97,6 +103,9 @@ fn deser_bool_or_str<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> 
     struct Visitor;
     impl<'de> de::Visitor<'de> for Visitor {
         type Value = bool;
+        fn visit_unit<E: de::Error>(self) -> Result<bool, E> {
+            Ok(false)
+        }
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             f.write_str("a bool, number, or bool string")
         }
@@ -146,7 +155,7 @@ fn deser_option_bool_or_str<'de, D: Deserializer<'de>>(d: D) -> Result<Option<bo
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MatchMap {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub map_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_name: Option<String>,
@@ -156,9 +165,9 @@ pub struct MatchMap {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Agent {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub agent_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub agent_name: String,
 }
 
@@ -181,19 +190,19 @@ pub struct MatchStats {
     pub score_known: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub missing_stats: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub mode_name: String,
     #[serde(default, deserialize_with = "deser_i64_or_str")]
     pub rounds_won: i64,
     #[serde(default, deserialize_with = "deser_i64_or_str")]
     pub rounds_lost: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub game_level: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VideoItem {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub video_id: String,
     #[serde(
         rename = "video_isProcessing",
@@ -202,33 +211,33 @@ pub struct VideoItem {
         skip_serializing_if = "Option::is_none"
     )]
     pub video_is_processing: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub video_src: String,
     #[serde(default, deserialize_with = "deser_i64_or_str")]
     pub video_duration: i64,
     #[serde(default, deserialize_with = "deser_i64_or_str")]
     pub video_fps: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub video_resolution: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub video_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub video_poster: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub video_ext: String,
     #[serde(default, deserialize_with = "deser_i64_or_str")]
     pub video_time: i64,
     #[serde(default, deserialize_with = "deser_i64_or_str")]
     pub video_size: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub video_level: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub video_type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub video_hash: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub cover_hash: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub template_id: String,
     #[serde(
         default,
@@ -242,17 +251,21 @@ pub struct VideoItem {
         skip_serializing_if = "Option::is_none"
     )]
     pub is_upload: Option<bool>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deser_null_as_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub rounds: Vec<RoundItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EventItem {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub event_id: String,
     #[serde(rename = "event_sTime", default, deserialize_with = "deser_i64_or_str")]
     pub event_s_time: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub event_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_ext: Option<serde_json::Value>,
@@ -260,23 +273,27 @@ pub struct EventItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RoundClip {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub clip_id: String,
     #[serde(default, deserialize_with = "deser_i64_or_str")]
     pub clip_duration: i64,
     #[serde(rename = "clip_sTime", default, deserialize_with = "deser_i64_or_str")]
     pub clip_s_time: i64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deser_null_as_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub clip_events: Vec<EventItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RoundHonor {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub honor_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub honor_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub honor_time: String,
 }
 
@@ -288,12 +305,16 @@ pub struct RoundItem {
     pub round_duration: i64,
     #[serde(rename = "round_sTime", default, deserialize_with = "deser_i64_or_str")]
     pub round_s_time: i64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deser_null_as_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub round_clips: Vec<RoundClip>,
     // ACLOS can write null when a round has no honors, as well as omit the field.
     #[serde(
         default,
-        deserialize_with = "deser_null_as_empty_vec",
+        deserialize_with = "deser_null_as_default",
         skip_serializing_if = "Vec::is_empty"
     )]
     pub round_honors: Vec<RoundHonor>,
@@ -301,19 +322,19 @@ pub struct RoundItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MatchRecord {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub matches_id: String,
     #[serde(default, deserialize_with = "deser_i64_or_str")]
     pub matches_time: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub map: MatchMap,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub agent: Agent,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub stats: MatchStats,
     #[serde(rename = "openID", default)]
     pub open_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub mode: String,
     #[serde(rename = "minRoundId", default, deserialize_with = "deser_i64_or_str")]
     pub min_round_id: i64,
@@ -321,7 +342,7 @@ pub struct MatchRecord {
     pub game_start_time: String,
     #[serde(rename = "gameEndTime", default)]
     pub game_end_time: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub videos: Vec<VideoItem>,
     /// Anything else ACLOS stuffs into the match object. Same shape as the
     /// TS parser's `extras` field. Captured via `#[serde(flatten)]` so it
@@ -366,9 +387,17 @@ pub struct Account {
     pub custom_name: Option<String>,
     /// Per-match MVP/SVP achievements from the snapshot file. Empty when the
     /// snapshot file is missing / empty / has no `match`-type records.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deser_null_as_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub achievements: Vec<SnapshotAchievement>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deser_null_as_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub match_details: Vec<SnapshotMatchDetail>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -382,13 +411,13 @@ pub struct Account {
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotAchievement {
     /// Matches `MatchRecord.matches_id` in the main wonderful-list.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub matches_id: String,
     /// "mvp" or "svp".
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub achv_type: String,
     /// Chinese display label, e.g. "MVP" / "SVP" (from `ss_type_str`).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_null_as_default")]
     pub type_str: String,
 }
 

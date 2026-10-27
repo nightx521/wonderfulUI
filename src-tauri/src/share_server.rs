@@ -371,7 +371,7 @@ fn content_disposition_attachment(filename: &str) -> String {
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
                 c
-            } else if c.is_ascii() && c != '"' && c != '\\' && c != ';' {
+            } else if c.is_ascii() && !c.is_ascii_control() && c != '"' && c != '\\' && c != ';' {
                 c
             } else {
                 '_'
@@ -672,6 +672,13 @@ pub(crate) mod tests {
         let header = content_disposition_attachment("clip.mp4");
         assert!(header.contains("filename=\"clip.mp4\""));
         assert!(header.contains("filename*=UTF-8''clip.mp4"));
+    }
+
+    #[test]
+    fn attachment_header_never_emits_raw_control_characters() {
+        let header = content_disposition_attachment("clip\r\nInjected: yes\t.mp4");
+        assert!(!header.chars().any(char::is_control));
+        assert!(header.contains("%0D%0A"));
     }
 
     #[test]

@@ -24,11 +24,18 @@ export class WonderfulDbError extends Error {
   constructor(message: string) { super(message); this.name = 'WonderfulDbError'; }
 }
 
+function arrayOrEmpty(v: unknown, ctx: string): unknown[] {
+  if (v == null) return [];
+  if (!Array.isArray(v)) throw new WonderfulDbError(`${ctx}: expected array`);
+  return v;
+}
+
 function asString(v: unknown, ctx: string): string {
   if (typeof v !== 'string') throw new WonderfulDbError(`${ctx}: expected string, got ${typeof v}`);
   return v;
 }
 function asNumber(v: unknown, ctx: string): number {
+  if (typeof v === 'string' && !v.trim()) throw new WonderfulDbError(`${ctx}: empty numeric value`);
   const n = typeof v === 'string' ? Number(v) : v;
   if (typeof n !== 'number' || !Number.isFinite(n)) {
     throw new WonderfulDbError(`${ctx}: expected number, got ${typeof v} ${JSON.stringify(v)}`);
@@ -100,7 +107,7 @@ function parseVideo(v: unknown): VideoItem {
     template_id: typeof o.template_id === 'string' ? o.template_id : '',
     clips_count: typeof o.clips_count === 'number' ? o.clips_count : undefined,
     is_upload: typeof o.is_upload === 'boolean' ? o.is_upload : undefined,
-    rounds: Array.isArray(o.rounds) ? o.rounds.map(parseRound) : undefined,
+    rounds: o.rounds == null ? undefined : arrayOrEmpty(o.rounds, 'rounds').map(parseRound),
   };
 }
 
@@ -120,7 +127,7 @@ function parseRoundClip(v: unknown): RoundClip {
     clip_id: typeof o.clip_id === 'string' ? o.clip_id : '',
     clip_duration: asNumber(o.clip_duration ?? 0, 'roundClip.clip_duration'),
     clip_sTime: asNumber(o.clip_sTime ?? 0, 'roundClip.clip_sTime'),
-    clip_events: Array.isArray(o.clip_events) ? o.clip_events.map(parseEvent) : [],
+    clip_events: arrayOrEmpty(o.clip_events, 'clip_events').map(parseEvent),
   };
 }
 
@@ -139,8 +146,8 @@ function parseRound(v: unknown): RoundItem {
     round_id: typeof o.round_id === 'string' ? o.round_id : String(o.round_id ?? ''),
     round_duration: asNumber(o.round_duration ?? 0, 'round.round_duration'),
     round_sTime: asNumber(o.round_sTime ?? 0, 'round.round_sTime'),
-    round_clips: Array.isArray(o.round_clips) ? o.round_clips.map(parseRoundClip) : [],
-    round_honors: Array.isArray(o.round_honors) ? o.round_honors.map(parseRoundHonor) : [],
+    round_clips: arrayOrEmpty(o.round_clips, 'round_clips').map(parseRoundClip),
+    round_honors: arrayOrEmpty(o.round_honors, 'round_honors').map(parseRoundHonor),
   };
 }
 
@@ -168,7 +175,7 @@ function parseMatch(v: unknown): MatchRecord {
     minRoundId: asNumber(o.minRoundId ?? 0, 'minRoundId'),
     gameStartTime: typeof o.gameStartTime === 'string' ? o.gameStartTime : '',
     gameEndTime: typeof o.gameEndTime === 'string' ? o.gameEndTime : '',
-    videos: Array.isArray(o.videos) ? o.videos.map(parseVideo) : [],
+    videos: arrayOrEmpty(o.videos, 'videos').map(parseVideo),
     career: typeof o.career === 'object' && o.career != null ? o.career as Record<string, unknown> : undefined,
     extras: Object.keys(extras).length ? extras : undefined,
   };
@@ -189,13 +196,7 @@ function buildFromJson(json: string, openid: string): WonderfulDbFile {
   // could in theory carry other keys; we just pick the wonderful-list one.
   const expectedKey = `key_wonderful_list_${openid}`;
   if (Object.keys(raw).length === 0) return { key: expectedKey, matches: [], raw };
-  let list = raw[expectedKey];
-  if (list == null) {
-    // fall back: pick the first key whose value is an array
-    for (const k of Object.keys(raw)) {
-      if (Array.isArray(raw[k])) { list = raw[k]; break; }
-    }
-  }
+  const list = raw[expectedKey];
   if (!Array.isArray(list)) {
     throw new WonderfulDbError(`no match list found (expected key "${expectedKey}")`);
   }
@@ -221,7 +222,7 @@ export async function parseWonderfulDbBuffer(buf: Uint8Array, openid: string): P
 
 /** Convenience: parse from a hex string (same as parseWonderfulDbBuffer but accepts a string). */
 export async function readWonderfulDbText(hexText: string, openid: string): Promise<WonderfulDbFile> {
-  const cipher = hexToBytes(hexText);
+  const cipher = hexToBytes(hexText.replace(/^\uFEFF/, ''));
   const json = await decryptWonderfulDbBuffer(cipher, openid);
   return buildFromJson(json, openid);
 }

@@ -20,6 +20,16 @@ use library::stats::LibraryStats;
 use parser::model::{LoadResult, MatchRecord};
 use tauri::{Emitter, Manager};
 
+async fn run_blocking<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("后台任务失败: {error}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     if let Some(exit_code) = firewall::run_helper_if_requested() {
@@ -319,8 +329,8 @@ fn aclos_status_for_base(base: &std::path::Path) -> Result<AclosStatusPayload, S
 }
 
 #[tauri::command]
-fn aclos_status() -> Result<AclosStatusPayload, String> {
-    aclos_status_for_base(&default_wonderful_dir()?)
+async fn aclos_status() -> Result<AclosStatusPayload, String> {
+    run_blocking(move || aclos_status_for_base(&default_wonderful_dir()?)).await
 }
 
 /// Return existing library state immediately, then spawn a background
@@ -329,141 +339,150 @@ fn aclos_status() -> Result<AclosStatusPayload, String> {
 /// `wui://account_loaded` events. This keeps the UI responsive during
 /// first launch.
 #[tauri::command]
-fn scan_shell(app: tauri::AppHandle) -> Result<ScanShellPayload, String> {
-    app_log::write(
-        app_log::LogLevel::Info,
-        "scan_shell",
-        "loading library shell",
-    );
-    let base = default_wonderful_dir()?;
-    let dir_str = base.to_string_lossy().into_owned();
-    let conn = library::db::open_library().map_err(|e| format!("open library: {}", e))?;
+async fn scan_shell(app: tauri::AppHandle) -> Result<ScanShellPayload, String> {
+    run_blocking(move || {
+        app_log::write(
+            app_log::LogLevel::Info,
+            "scan_shell",
+            "loading library shell",
+        );
+        let base = default_wonderful_dir()?;
+        let dir_str = base.to_string_lossy().into_owned();
+        let conn = library::db::open_library().map_err(|e| format!("open library: {}", e))?;
 
-    let _ = app.emit(
-        "wui://phase",
-        serde_json::json!({
-            "phase": "opening",
-            "label": "正在打开 WonderfulUI\u{2026}",
-        }),
-    );
+        let _ = app.emit(
+            "wui://phase",
+            serde_json::json!({
+                "phase": "opening",
+                "label": "正在打开 WonderfulUI\u{2026}",
+            }),
+        );
 
-    // Phase 1: return existing accounts immediately
-    let view = library::db::load_library_view(&conn, dir_str.clone())
-        .map_err(|e| format!("load library: {}", e))?;
+        // Phase 1: return existing accounts immediately
+        let view = library::db::load_library_view(&conn, dir_str.clone())
+            .map_err(|e| format!("load library: {}", e))?;
 
-    // Phase 2: scrape in background
-    let app2 = app.clone();
-    let base2 = base.clone();
-    std::thread::spawn(move || {
-        let refresh = library::db::open_library()
-            .map_err(|e| format!("open library: {e}"))
-            .and_then(|conn| load_after_startup_scrape(&conn, &base2, Some(&app2)));
+        // Phase 2: scrape in background
+        let app2 = app.clone();
+        let base2 = base.clone();
+        std::thread::spawn(move || {
+            let refresh = library::db::open_library()
+                .map_err(|e| format!("open library: {e}"))
+                .and_then(|conn| load_after_startup_scrape(&conn, &base2, Some(&app2)));
 
-        match refresh {
-            Ok(outcome) => {
-                if let Some(warning) = outcome.warning {
+            match refresh {
+                Ok(outcome) => {
+                    if let Some(warning) = outcome.warning {
+                        app_log::write(
+                            app_log::LogLevel::Warn,
+                            "scan_shell",
+                            format!("background refresh degraded: {warning}"),
+                        );
+                        let _ = app2.emit(
+                            "wui://phase",
+                            serde_json::json!({
+                                "phase": "error",
+                                "label": "源数据刷新失败，已加载现有资料库",
+                                "sub": warning,
+                            }),
+                        );
+                        let _ = app2.emit(
+                            "wui://startup_refresh_finished",
+                            serde_json::json!({
+                                "status": "degraded",
+                                "error": warning,
+                            }),
+                        );
+                    } else {
+                        let _ = app2.emit(
+                            "wui://startup_refresh_finished",
+                            serde_json::json!({ "status": "finished" }),
+                        );
+                    }
+                }
+                Err(error) => {
                     app_log::write(
-                        app_log::LogLevel::Warn,
+                        app_log::LogLevel::Error,
                         "scan_shell",
-                        format!("background refresh degraded: {warning}"),
+                        format!("background refresh failed: {error}"),
                     );
                     let _ = app2.emit(
                         "wui://phase",
                         serde_json::json!({
                             "phase": "error",
-                            "label": "源数据刷新失败，已加载现有资料库",
-                            "sub": warning,
+                            "label": "资料库刷新失败",
+                            "sub": error,
                         }),
                     );
                     let _ = app2.emit(
                         "wui://startup_refresh_finished",
                         serde_json::json!({
-                            "status": "degraded",
-                            "error": warning,
+                            "status": "error",
+                            "error": error,
                         }),
-                    );
-                } else {
-                    let _ = app2.emit(
-                        "wui://startup_refresh_finished",
-                        serde_json::json!({ "status": "finished" }),
                     );
                 }
             }
-            Err(error) => {
-                app_log::write(
-                    app_log::LogLevel::Error,
-                    "scan_shell",
-                    format!("background refresh failed: {error}"),
-                );
-                let _ = app2.emit(
-                    "wui://phase",
-                    serde_json::json!({
-                        "phase": "error",
-                        "label": "资料库刷新失败",
-                        "sub": error,
-                    }),
-                );
-                let _ = app2.emit(
-                    "wui://startup_refresh_finished",
-                    serde_json::json!({
-                        "status": "error",
-                        "error": error,
-                    }),
-                );
-            }
-        }
-    });
+        });
 
-    Ok(ScanShellPayload {
-        accounts: view.accounts,
-        dir: dir_str,
-        total_errors: view.total_errors,
+        Ok(ScanShellPayload {
+            accounts: view.accounts,
+            dir: dir_str,
+            total_errors: view.total_errors,
+        })
     })
+    .await
 }
 
 /// Refresh the local SQLite library from the configured WonderfulDb source,
 /// then return the library view. WonderfulDb is only read by the source
 /// adapter; this command no longer has a direct parser fallback.
 #[tauri::command]
-fn scan_all(app: tauri::AppHandle) -> Result<LoadResult, String> {
-    app_log::write(
-        app_log::LogLevel::Info,
-        "scan_all",
-        "startup incremental scan requested",
-    );
-    let base = default_wonderful_dir()?;
-    let conn = library::db::open_library()?;
-    let view = load_after_startup_scrape(&conn, &base, Some(&app))?.view;
-    allow_load_result_assets(&app, &view);
-    Ok(view)
+async fn scan_all(app: tauri::AppHandle) -> Result<LoadResult, String> {
+    run_blocking(move || {
+        app_log::write(
+            app_log::LogLevel::Info,
+            "scan_all",
+            "startup incremental scan requested",
+        );
+        let base = default_wonderful_dir()?;
+        let conn = library::db::open_library()?;
+        let view = load_after_startup_scrape(&conn, &base, Some(&app))?.view;
+        allow_load_result_assets(&app, &view);
+        Ok(view)
+    })
+    .await
 }
 
 #[tauri::command]
-fn scrape_library(app: tauri::AppHandle, mode: Option<String>) -> Result<LoadResult, String> {
-    let (scrape_mode, trigger, mode_label) = validated_manual_scrape_request(mode.as_deref())?;
-    app_log::write(
-        app_log::LogLevel::Info,
-        "scrape_library",
-        format!("manual scrape requested mode={mode_label}"),
-    );
-    let base = default_wonderful_dir()?;
-    let conn = library::db::open_library()?;
-    library::scraper::scrape_wonderful_dir_with_mode(
-        &conn,
-        &base,
-        trigger,
-        scrape_mode,
-        Some(&app),
-    )?;
-    app_log::write(
-        app_log::LogLevel::Info,
-        "scrape_library",
-        format!("manual scrape finished mode={mode_label}"),
-    );
-    let view = library::db::load_library_view(&conn, base.to_string_lossy().into_owned())
-        .map_err(|e| format!("load library: {}", e))?;
-    allow_load_result_assets(&app, &view);
-    Ok(view)
+async fn scrape_library(app: tauri::AppHandle, mode: Option<String>) -> Result<LoadResult, String> {
+    run_blocking(move || {
+        let (scrape_mode, trigger, mode_label) = validated_manual_scrape_request(mode.as_deref())?;
+        app_log::write(
+            app_log::LogLevel::Info,
+            "scrape_library",
+            format!("manual scrape requested mode={mode_label}"),
+        );
+        let base = default_wonderful_dir()?;
+        let conn = library::db::open_library()?;
+        library::scraper::scrape_wonderful_dir_with_mode(
+            &conn,
+            &base,
+            trigger,
+            scrape_mode,
+            Some(&app),
+        )?;
+        app_log::write(
+            app_log::LogLevel::Info,
+            "scrape_library",
+            format!("manual scrape finished mode={mode_label}"),
+        );
+        let view = library::db::load_library_view(&conn, base.to_string_lossy().into_owned())
+            .map_err(|e| format!("load library: {}", e))?;
+        allow_load_result_assets(&app, &view);
+        Ok(view)
+    })
+    .await
 }
 
 fn validated_manual_scrape_request(
@@ -481,20 +500,23 @@ fn validated_manual_scrape_request(
 }
 
 #[tauri::command]
-fn load_library(app: tauri::AppHandle) -> Result<LoadResult, String> {
-    app_log::write(
-        app_log::LogLevel::Info,
-        "load_library",
-        "loading sqlite library view",
-    );
-    let conn = library::db::open_library()?;
-    let view = library::db::load_library_view(
-        &conn,
-        default_wonderful_dir()?.to_string_lossy().into_owned(),
-    )
-    .map_err(|e| format!("load library: {}", e))?;
-    allow_load_result_assets(&app, &view);
-    Ok(view)
+async fn load_library(app: tauri::AppHandle) -> Result<LoadResult, String> {
+    run_blocking(move || {
+        app_log::write(
+            app_log::LogLevel::Info,
+            "load_library",
+            "loading sqlite library view",
+        );
+        let conn = library::db::open_library()?;
+        let view = library::db::load_library_view(
+            &conn,
+            default_wonderful_dir()?.to_string_lossy().into_owned(),
+        )
+        .map_err(|e| format!("load library: {}", e))?;
+        allow_load_result_assets(&app, &view);
+        Ok(view)
+    })
+    .await
 }
 
 /// Return the single match with full round / clip / event data from the
@@ -502,38 +524,47 @@ fn load_library(app: tauri::AppHandle) -> Result<LoadResult, String> {
 /// the library from WonderfulDb; this command does not directly read
 /// WonderfulDb.
 #[tauri::command]
-fn get_match_rounds(
+async fn get_match_rounds(
     app: tauri::AppHandle,
     openid: String,
     match_id: String,
 ) -> Result<MatchRecord, String> {
-    let conn = library::db::open_library()?;
-    validate_match_round_request(&conn, &openid, &match_id)?;
-    app_log::write(
-        app_log::LogLevel::Info,
-        "get_match_rounds",
-        format!("loading rounds match_id={match_id} openid={openid}"),
-    );
-    let full = library::db::load_match_rounds(&conn, &openid, &match_id)?;
-    allow_match_asset_paths(&app, std::slice::from_ref(&full));
-    Ok(full)
+    run_blocking(move || {
+        let conn = library::db::open_library()?;
+        validate_match_round_request(&conn, &openid, &match_id)?;
+        app_log::write(
+            app_log::LogLevel::Info,
+            "get_match_rounds",
+            format!("loading rounds match_id={match_id} openid={openid}"),
+        );
+        let full = library::db::load_match_rounds(&conn, &openid, &match_id)?;
+        allow_match_asset_paths(&app, std::slice::from_ref(&full));
+        Ok(full)
+    })
+    .await
 }
 
 #[tauri::command]
-fn save_account_order(openids: Vec<String>) -> Result<(), String> {
-    let conn = library::db::open_library()?;
-    validate_account_order_request(&conn, &openids)?;
-    library::db::save_account_order(&conn, &openids)
-        .map_err(|e| format!("save account order: {}", e))
+async fn save_account_order(openids: Vec<String>) -> Result<(), String> {
+    run_blocking(move || {
+        let conn = library::db::open_library()?;
+        validate_account_order_request(&conn, &openids)?;
+        library::db::save_account_order(&conn, &openids)
+            .map_err(|e| format!("save account order: {}", e))
+    })
+    .await
 }
 
 #[tauri::command]
-fn rename_account(openid: String, custom_name: Option<String>) -> Result<(), String> {
-    let conn = library::db::open_library()?;
-    validate_known_account_request(&conn, &openid)?;
-    validate_account_custom_name(custom_name.as_deref())?;
-    library::db::set_account_custom_name(&conn, &openid, custom_name.as_deref())
-        .map_err(|e| format!("rename account: {}", e))
+async fn rename_account(openid: String, custom_name: Option<String>) -> Result<(), String> {
+    run_blocking(move || {
+        let conn = library::db::open_library()?;
+        validate_known_account_request(&conn, &openid)?;
+        validate_account_custom_name(custom_name.as_deref())?;
+        library::db::set_account_custom_name(&conn, &openid, custom_name.as_deref())
+            .map_err(|e| format!("rename account: {}", e))
+    })
+    .await
 }
 
 const MAX_ACCOUNT_ORDER_ITEMS: usize = 1024;
@@ -709,10 +740,13 @@ fn reveal_logs_dir() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_library_stats() -> Result<LibraryStats, String> {
-    app_log::write(app_log::LogLevel::Info, "stats", "library stats requested");
-    let conn = library::db::open_library()?;
-    library::stats::compute(&conn)
+async fn get_library_stats() -> Result<LibraryStats, String> {
+    run_blocking(move || {
+        app_log::write(app_log::LogLevel::Info, "stats", "library stats requested");
+        let conn = library::db::open_library()?;
+        library::stats::compute(&conn)
+    })
+    .await
 }
 
 fn assets_dir(kind: &str) -> Result<std::path::PathBuf, String> {
@@ -842,6 +876,7 @@ fn cache_asset_inner(kind: &str, url: &str) -> Result<(String, u64, bool), Strin
 
     let agent = ureq::AgentBuilder::new()
         .redirects(0)
+        .timeout(std::time::Duration::from_secs(30))
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout_read(std::time::Duration::from_secs(20))
         .build();
@@ -922,16 +957,16 @@ fn cache_asset_inner(kind: &str, url: &str) -> Result<(String, u64, bool), Strin
 /// unified asset cache under kind `hero_image`. Returns the absolute local
 /// path to the cached file.
 #[tauri::command]
-fn cache_hero_image(url: String) -> Result<String, String> {
-    cache_asset_inner("hero_image", &url).map(|(p, _, _)| p)
+async fn cache_hero_image(url: String) -> Result<String, String> {
+    run_blocking(move || cache_asset_inner("hero_image", &url).map(|(p, _, _)| p)).await
 }
 
 /// Download (or hit cache for) a remote asset by kind and URL. Kind is
 /// one of `hero_image`, `map_image`, `game_mode_icon`. Returns the
 /// absolute local path to the cached file.
 #[tauri::command]
-fn cache_asset(kind: String, url: String) -> Result<String, String> {
-    cache_asset_inner(&kind, &url).map(|(p, _, _)| p)
+async fn cache_asset(kind: String, url: String) -> Result<String, String> {
+    run_blocking(move || cache_asset_inner(&kind, &url).map(|(p, _, _)| p)).await
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -971,83 +1006,49 @@ fn validate_cache_entries(entries: &[CacheEntry]) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn cache_assets(
+async fn cache_assets(
     app: tauri::AppHandle,
     entries: Vec<CacheEntry>,
 ) -> Result<HashMap<String, String>, String> {
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    run_blocking(move || {
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+        use std::sync::Mutex;
 
-    validate_cache_entries(&entries)?;
-    // Pre-dedupe by url; later entries with the same url are skipped
-    // (they'd produce the same file and rewrite SQLite needlessly).
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let work: Vec<(usize, CacheEntry)> = entries
-        .into_iter()
-        .filter_map(|mut entry| {
-            entry.url = entry.url.trim().to_string();
-            seen.insert(entry.url.clone()).then_some(entry)
-        })
-        .enumerate()
-        .map(|(i, entry)| (i + 1, entry))
-        .collect();
-    let total = work.len();
-    if total == 0 {
-        return Ok(HashMap::new());
-    }
+        validate_cache_entries(&entries)?;
+        // Pre-dedupe by url; later entries with the same url are skipped
+        // (they'd produce the same file and rewrite SQLite needlessly).
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let work: Vec<(usize, CacheEntry)> = entries
+            .into_iter()
+            .filter_map(|mut entry| {
+                entry.url = entry.url.trim().to_string();
+                seen.insert(entry.url.clone()).then_some(entry)
+            })
+            .enumerate()
+            .map(|(i, entry)| (i + 1, entry))
+            .collect();
+        let total = work.len();
+        if total == 0 {
+            return Ok(HashMap::new());
+        }
 
-    let results: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
-    let next_idx = AtomicUsize::new(0);
-    let bytes_done = AtomicU64::new(0);
+        let results: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
+        let next_idx = AtomicUsize::new(0);
+        let bytes_done = AtomicU64::new(0);
 
-    std::thread::scope(|s| {
-        for _ in 0..CACHE_CONCURRENCY.min(work.len()) {
-            s.spawn(|| loop {
-                let idx = next_idx.fetch_add(1, Ordering::Relaxed);
-                if idx >= work.len() {
-                    break;
-                }
-                let (index, entry) = &work[idx];
+        let batch_started = std::time::Instant::now();
+        std::thread::scope(|s| {
+            for _ in 0..CACHE_CONCURRENCY.min(work.len()) {
+                s.spawn(|| loop {
+                    if batch_started.elapsed() >= std::time::Duration::from_secs(60) {
+                        break;
+                    }
+                    let idx = next_idx.fetch_add(1, Ordering::Relaxed);
+                    if idx >= work.len() {
+                        break;
+                    }
+                    let (index, entry) = &work[idx];
 
-                let _ = app.emit(
-                    "wui://cache_asset_progress",
-                    CacheAssetProgress {
-                        url: entry.url.clone(),
-                        kind: entry.kind.clone(),
-                        index: *index,
-                        total,
-                        file_size: 0,
-                        bytes_done: bytes_done.load(Ordering::Relaxed),
-                        status: "started".into(),
-                    },
-                );
-
-                if let Ok((path, file_size, was_cached)) =
-                    cache_asset_inner(&entry.kind, &entry.url)
-                {
-                    bytes_done.fetch_add(file_size, Ordering::Relaxed);
-                    let status = if was_cached { "cached" } else { "finished" };
-                    let _ = results
-                        .lock()
-                        .map(|mut g| g.insert(entry.url.clone(), path));
-                    let _ = app.emit(
-                        "wui://cache_asset_progress",
-                        CacheAssetProgress {
-                            url: entry.url.clone(),
-                            kind: entry.kind.clone(),
-                            index: *index,
-                            total,
-                            file_size,
-                            bytes_done: bytes_done.load(Ordering::Relaxed),
-                            status: status.into(),
-                        },
-                    );
-                } else {
-                    app_log::write(
-                        app_log::LogLevel::Warn,
-                        "cache_assets",
-                        format!("asset cache failed kind={} index={}", entry.kind, index),
-                    );
                     let _ = app.emit(
                         "wui://cache_asset_progress",
                         CacheAssetProgress {
@@ -1057,15 +1058,56 @@ fn cache_assets(
                             total,
                             file_size: 0,
                             bytes_done: bytes_done.load(Ordering::Relaxed),
-                            status: "failed".into(),
+                            status: "started".into(),
                         },
                     );
-                }
-            });
-        }
-    });
 
-    Ok(results.into_inner().unwrap_or_default())
+                    if let Ok((path, file_size, was_cached)) =
+                        cache_asset_inner(&entry.kind, &entry.url)
+                    {
+                        bytes_done.fetch_add(file_size, Ordering::Relaxed);
+                        let status = if was_cached { "cached" } else { "finished" };
+                        let _ = results
+                            .lock()
+                            .map(|mut g| g.insert(entry.url.clone(), path));
+                        let _ = app.emit(
+                            "wui://cache_asset_progress",
+                            CacheAssetProgress {
+                                url: entry.url.clone(),
+                                kind: entry.kind.clone(),
+                                index: *index,
+                                total,
+                                file_size,
+                                bytes_done: bytes_done.load(Ordering::Relaxed),
+                                status: status.into(),
+                            },
+                        );
+                    } else {
+                        app_log::write(
+                            app_log::LogLevel::Warn,
+                            "cache_assets",
+                            format!("asset cache failed kind={} index={}", entry.kind, index),
+                        );
+                        let _ = app.emit(
+                            "wui://cache_asset_progress",
+                            CacheAssetProgress {
+                                url: entry.url.clone(),
+                                kind: entry.kind.clone(),
+                                index: *index,
+                                total,
+                                file_size: 0,
+                                bytes_done: bytes_done.load(Ordering::Relaxed),
+                                status: "failed".into(),
+                            },
+                        );
+                    }
+                });
+            }
+        });
+
+        Ok(results.into_inner().unwrap_or_default())
+    })
+    .await
 }
 
 // ============================================================================

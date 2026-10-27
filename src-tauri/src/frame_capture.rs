@@ -2,7 +2,7 @@
 //!
 //! Media Foundation `IMFSourceReader`: seek + decode one RGB32 frame.
 //! Caches one reader per path so repeat screenshots of the open clip stay fast.
-//! COM objects are only used under a mutex (MTA + single accessor).
+//! COM and decoder objects stay on a dedicated MTA worker thread.
 
 #[cfg(windows)]
 use base64::Engine;
@@ -44,35 +44,99 @@ fn capture_frame_png(path: &str, time_ms: u64) -> Result<Vec<u8>, String> {
         return Err(format!("视频文件不存在: {}", path));
     }
 
-    ensure_mf_started()?;
     let target_hns = time_ms_to_hns(time_ms)?;
-    let bgra = with_reader(path, |reader| read_frame_bgra(reader, target_hns))?;
-    encode_bgra_png_fast(&bgra.pixels, bgra.width, bgra.height)
+    let (reply, response) = std::sync::mpsc::channel();
+    let mut request = CaptureRequest {
+        path: path.to_owned(),
+        target_hns,
+        reply,
+    };
+    let worker = CAPTURE_WORKER.get_or_init(|| Mutex::new(None));
+    for _ in 0..2 {
+        let mut slot = worker.lock().map_err(|_| "截图任务锁失败".to_string())?;
+        if slot.is_none() {
+            *slot = Some(start_capture_worker()?);
+        }
+        match slot.as_ref().unwrap().try_send(request) {
+            Ok(()) => {
+                drop(slot);
+                return response
+                    .recv()
+                    .map_err(|_| "截图线程已停止，请重试".to_string())?;
+            }
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                return Err("截图任务较多，请稍后重试".into())
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(pending)) => {
+                request = pending;
+                *slot = None;
+            }
+        }
+    }
+    Err("截图线程无法启动，请重试".into())
 }
 
-// ── MF startup ─────────────────────────────────────────────────────────────
+#[cfg(windows)]
+struct CaptureRequest {
+    path: String,
+    target_hns: i64,
+    reply: std::sync::mpsc::Sender<Result<Vec<u8>, String>>,
+}
 
 #[cfg(windows)]
-static MF_STARTED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+static CAPTURE_WORKER: std::sync::OnceLock<
+    Mutex<Option<std::sync::mpsc::SyncSender<CaptureRequest>>>,
+> = std::sync::OnceLock::new();
 
 #[cfg(windows)]
-fn ensure_mf_started() -> Result<(), String> {
-    MF_STARTED
-        .get_or_init(|| unsafe {
-            let _ = windows::Win32::System::Com::CoInitializeEx(
-                None,
-                windows::Win32::System::Com::COINIT_MULTITHREADED,
-            );
-            windows::Win32::Media::MediaFoundation::MFStartup(
-                windows::Win32::Media::MediaFoundation::MF_VERSION,
-                windows::Win32::Media::MediaFoundation::MFSTARTUP_FULL,
-            )
-            .map_err(|e| format!("初始化 Media Foundation 失败: {}", e.message()))
+fn start_capture_worker() -> Result<std::sync::mpsc::SyncSender<CaptureRequest>, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<CaptureRequest>(4);
+    std::thread::Builder::new()
+        .name("wui-frame-capture".into())
+        .spawn(move || {
+            // The reader is constructed, used and released on this one MTA thread.
+            let mut session = CaptureSession {
+                reader: None,
+                runtime: None,
+            };
+            while let Ok(request) = receiver.recv() {
+                let result = session.capture(&request.path, request.target_hns);
+                let _ = request.reply.send(result);
+            }
         })
-        .clone()
+        .map_err(|e| format!("启动截图线程失败: {e}"))?;
+    Ok(sender)
 }
 
-// ── Cached reader ──────────────────────────────────────────────────────────
+#[cfg(windows)]
+struct MediaRuntime;
+
+#[cfg(windows)]
+impl MediaRuntime {
+    fn start() -> Result<Self, String> {
+        use windows::Win32::{Media::MediaFoundation::*, System::Com::*};
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED)
+                .ok()
+                .map_err(win_err("初始化截图线程"))?;
+            if let Err(error) = MFStartup(MF_VERSION, MFSTARTUP_FULL) {
+                CoUninitialize();
+                return Err(win_err("初始化 Media Foundation")(error));
+            }
+        }
+        Ok(Self)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for MediaRuntime {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::Media::MediaFoundation::MFShutdown();
+            windows::Win32::System::Com::CoUninitialize();
+        }
+    }
+}
 
 #[cfg(windows)]
 struct ReaderSession {
@@ -80,33 +144,40 @@ struct ReaderSession {
     reader: windows::Win32::Media::MediaFoundation::IMFSourceReader,
 }
 
-// SAFETY: IMFSourceReader is only used under SESSION mutex from spawn_blocking
-// workers (one accessor at a time). MF is initialized as MTA.
 #[cfg(windows)]
-unsafe impl Send for ReaderSession {}
+struct CaptureSession {
+    // Drop the reader before shutting down MF and COM.
+    reader: Option<ReaderSession>,
+    runtime: Option<MediaRuntime>,
+}
 
 #[cfg(windows)]
-static SESSION: Mutex<Option<ReaderSession>> = Mutex::new(None);
-
-#[cfg(windows)]
-fn with_reader<T>(
-    path: &str,
-    f: impl FnOnce(&windows::Win32::Media::MediaFoundation::IMFSourceReader) -> Result<T, String>,
-) -> Result<T, String> {
-    let mut guard = SESSION.lock().map_err(|_| "截图会话锁失败".to_string())?;
-
-    let need_new = match guard.as_ref() {
-        Some(s) => s.path != path,
-        None => true,
-    };
-    if need_new {
-        *guard = Some(ReaderSession {
-            path: path.to_string(),
-            reader: create_source_reader(path)?,
-        });
+impl CaptureSession {
+    fn capture(&mut self, path: &str, target_hns: i64) -> Result<Vec<u8>, String> {
+        if self.runtime.is_none() {
+            self.runtime = Some(MediaRuntime::start()?);
+        }
+        if self
+            .reader
+            .as_ref()
+            .is_none_or(|reader| reader.path != path)
+        {
+            self.reader = None;
+            self.reader = Some(ReaderSession {
+                path: path.into(),
+                reader: create_source_reader(path)?,
+            });
+        }
+        let reader = &self.reader.as_ref().unwrap().reader;
+        let frame = match read_frame_bgra(reader, target_hns) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.reader = None;
+                return Err(error);
+            }
+        };
+        encode_bgra_png_fast(&frame.pixels, frame.width, frame.height)
     }
-    let session = guard.as_ref().expect("session set");
-    f(&session.reader)
 }
 
 #[cfg(windows)]
@@ -517,6 +588,30 @@ fn win_err(ctx: &'static str) -> impl Fn(windows::core::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::{checked_scanline_address, time_ms_to_hns, validate_frame_layout};
+
+    #[cfg(windows)]
+    #[test]
+    fn capture_initialization_can_retry_after_incompatible_apartment() {
+        std::thread::spawn(|| unsafe {
+            use windows::Win32::System::Com::*;
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap();
+            let mut session = super::CaptureSession {
+                reader: None,
+                runtime: None,
+            };
+            assert!(session.capture("missing-fixture.mp4", 0).is_err());
+            assert!(session.runtime.is_none());
+            CoUninitialize();
+            session.runtime = Some(super::MediaRuntime::start().unwrap());
+            let mut apartment = APTTYPE::default();
+            let mut qualifier = APTTYPEQUALIFIER::default();
+            CoGetApartmentType(&mut apartment, &mut qualifier).unwrap();
+            assert_eq!(apartment, APTTYPE_MTA);
+            drop(session);
+        })
+        .join()
+        .unwrap();
+    }
 
     #[test]
     fn capture_timestamp_conversion_rejects_u64_wraparound() {

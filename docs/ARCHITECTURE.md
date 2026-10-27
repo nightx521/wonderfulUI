@@ -100,6 +100,9 @@ Windows reparse points。文件名、大小和路径后缀必须得到唯一候�
 
 扫描模式和触发来源由后端校验，不信任 renderer 传入的审计文字。启动、手动刷新和全量
 扫描串行化 SQLite 写入，避免后台任务覆盖较新的手动结果。
+重型资料库命令通过异步 IPC 与阻塞工作线程执行，连接在工作线程内打开。当前 schema
+的普通连接不重复执行迁移或回写版本；旧结构仍可迁移修复，较新未知 schema 会拒绝打开。
+冲突的对局/视频编号会保留该账户旧索引并记录账户错误，其他账户继续扫描。
 
 ### 本地资料库和视频
 
@@ -109,6 +112,8 @@ Windows reparse points。文件名、大小和路径后缀必须得到唯一候�
 - `play_video`：Windows 上调用 `ShellExecuteW` 交给默认播放器；
 - `reveal_in_explorer`：用 `explorer.exe /select` 定位文件；
 - `capture_video_frame`：Windows Media Foundation 读取当前视频帧，返回 PNG base64；
+  解码器与 COM/MF 初始化均由固定截图工作线程拥有；初始化失败可重试，解码失败会丢弃
+  该解码器，下次请求重建。线程内先释放解码器，再释放 MF 与 COM。
 - `get_log_status`/`reveal_logs_dir`：读取有限日志尾部或打开应用日志目录。
 
 播放、资源管理器、截图和快传 command 都要求路径精确匹配 SQLite `videos.path` 或

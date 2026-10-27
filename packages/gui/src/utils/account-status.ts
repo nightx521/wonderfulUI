@@ -5,6 +5,11 @@ export interface AccountReadFeedback {
 }
 
 const feedback: Record<string, AccountReadFeedback> = {
+  index_conflict: {
+    title: '账户记录编号冲突',
+    cause: '部分对局或视频编号重复，本次已保留该账户的原有记录。',
+    action: '其他账户仍会扫描；稍后刷新重试，详细原因请查看日志。',
+  },
   file_missing: {
     title: '账户文件未找到',
     cause: '文件可能已移动，或客户端正在更新数据。',

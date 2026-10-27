@@ -1,12 +1,13 @@
 use crate::library::model::LibraryLoadResult;
 use crate::library::now_ms;
 use crate::parser::model::{strip_match_rounds, Account, MatchRecord, SnapshotAchievement};
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, OptionalExtension, Result};
 use std::path::PathBuf;
 use std::time::Duration;
 
 pub const CURRENT_SCHEMA_VERSION: i64 = 7;
 const LIBRARY_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+static MIGRATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn library_dir() -> std::result::Result<PathBuf, String> {
     let base = std::env::var("LOCALAPPDATA")
@@ -33,9 +34,25 @@ fn configure_library_connection(
     // normal writer handoff instead of failing immediately with SQLITE_BUSY.
     conn.busy_timeout(LIBRARY_BUSY_TIMEOUT)
         .map_err(|e| format!("busy timeout {}: {}", path.display(), e))?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+    let version = stored_schema_version(conn).map_err(|e| e.to_string())?;
+    ensure_supported_schema(version).map_err(|e| e.to_string())?;
+    let journal: String = conn
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if !journal.eq_ignore_ascii_case("wal") && journal != "memory" {
+        conn.execute_batch("PRAGMA journal_mode=WAL;")
+            .map_err(|e| e.to_string())?;
+    }
+    conn.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")
         .map_err(|e| format!("pragma {}: {}", path.display(), e))?;
-    migrate(conn).map_err(|e| format!("migrate {}: {}", path.display(), e))?;
+    if !schema_is_current(conn).map_err(|e| e.to_string())? {
+        let _guard = MIGRATION_LOCK
+            .lock()
+            .map_err(|_| "资料库初始化锁失败".to_string())?;
+        if !schema_is_current(conn).map_err(|e| e.to_string())? {
+            migrate(conn).map_err(|e| format!("migrate {}: {}", path.display(), e))?;
+        }
+    }
     Ok(())
 }
 
@@ -44,7 +61,74 @@ pub fn open_memory_for_test() -> Result<Connection> {
     Connection::open_in_memory()
 }
 
+fn stored_schema_version(conn: &Connection) -> Result<Option<i64>> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(None);
+    }
+    let version: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    version
+        .map(|v| {
+            v.parse().map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()
+}
+
+fn ensure_supported_schema(version: Option<i64>) -> Result<()> {
+    if version.is_some_and(|version| version > CURRENT_SCHEMA_VERSION) {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+            Some("资料库由较新版本创建，请更新软件后再打开".into()),
+        ));
+    }
+    Ok(())
+}
+
+fn schema_is_current(conn: &Connection) -> Result<bool> {
+    let version = stored_schema_version(conn)?;
+    ensure_supported_schema(version)?;
+    if version != Some(CURRENT_SCHEMA_VERSION) {
+        return Ok(false);
+    }
+    let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('meta','sources','scrape_jobs','accounts','account_preferences','snapshot_achievements','matches','videos','events','assets','history_devices','history_accounts','history_matches','history_videos')", [], |row| row.get(0))?;
+    if tables != 14 {
+        return Ok(false);
+    }
+    for column in [
+        "parse_error",
+        "parse_error_code",
+        "match_details_json",
+        "source_size_bytes",
+        "source_mtime_ms",
+        "snapshot_size_bytes",
+        "snapshot_mtime_ms",
+    ] {
+        if !column_exists(conn, "accounts", column)? {
+            return Ok(false);
+        }
+    }
+    Ok(column_exists(conn, "scrape_jobs", "errors_seen")?
+        && column_exists(conn, "scrape_jobs", "skipped_accounts")?)
+}
+
 pub fn migrate(conn: &Connection) -> Result<()> {
+    ensure_supported_schema(stored_schema_version(conn)?)?;
     conn.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;
@@ -266,7 +350,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE meta.value <> excluded.value",
         [CURRENT_SCHEMA_VERSION.to_string()],
     )?;
     Ok(())
@@ -477,6 +561,20 @@ pub fn is_known_account(conn: &Connection, openid: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_schema_connections_do_not_write_and_future_schema_is_preserved() {
+        let conn = open_memory_for_test().unwrap();
+        configure_library_connection(&conn, std::path::Path::new(":memory:")).unwrap();
+        let before = conn.total_changes();
+        configure_library_connection(&conn, std::path::Path::new(":memory:")).unwrap();
+        assert_eq!(conn.total_changes(), before);
+        conn.execute("UPDATE meta SET value='999' WHERE key='schema_version'", [])
+            .unwrap();
+        assert!(configure_library_connection(&conn, std::path::Path::new(":memory:")).is_err());
+        assert!(migrate(&conn).is_err());
+        assert_eq!(stored_schema_version(&conn).unwrap(), Some(999));
+    }
 
     #[test]
     fn migration_retains_legacy_errors_and_named_empty_accounts() {

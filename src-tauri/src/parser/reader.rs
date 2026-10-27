@@ -26,7 +26,7 @@ use std::path::Path;
 /// (ACLOS uses the openid as the file name with no extension).
 pub fn parse_wonderful_db(path: &Path, openid: &str) -> Result<WonderfulDbFile, ParseError> {
     let bytes = std::fs::read(path)?;
-    let hex_text = std::str::from_utf8(&bytes)?;
+    let hex_text = std::str::from_utf8(&bytes)?.trim_start_matches('\u{feff}');
     let cipher = decode_hex(hex_text)?;
 
     let (key, iv) = derive_key_iv(openid);
@@ -36,7 +36,7 @@ pub fn parse_wonderful_db(path: &Path, openid: &str) -> Result<WonderfulDbFile, 
 }
 
 fn parse_json(json_text: &str, openid: &str) -> Result<WonderfulDbFile, ParseError> {
-    let raw: serde_json::Value = serde_json::from_str(json_text)?;
+    let raw: serde_json::Value = serde_json::from_str(json_text.trim_start_matches('\u{feff}'))?;
     let obj = raw.as_object().ok_or(ParseError::NotAnObject)?;
 
     let expected_key = format!("key_wonderful_list_{}", openid);
@@ -51,7 +51,6 @@ fn parse_json(json_text: &str, openid: &str) -> Result<WonderfulDbFile, ParseErr
     }
     let list_value = obj
         .get(&expected_key)
-        .or_else(|| obj.values().find(|v| v.is_array()))
         .ok_or_else(|| ParseError::NoMatchList(expected_key.clone()))?;
 
     let mut matches: Vec<MatchRecord> = serde_json::from_value(list_value.clone())?;
@@ -111,51 +110,33 @@ pub struct SnapshotData {
 /// Returns `Ok(SnapshotData::default())` when the file is missing, empty,
 /// or has no `ss_nick` / `ss_nick_id` — never an error.
 pub fn parse_snapshot_db(path: &Path, openid: &str) -> Result<SnapshotData, ParseError> {
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SnapshotData::default()),
-        Err(e) => return Err(e.into()),
-    };
-    let hex_text = std::str::from_utf8(&bytes)
-        .map_err(|e| ParseError::Crypto(format!("file is not valid UTF-8: {}", e)))?;
-    let cipher = match decode_hex(hex_text) {
-        Ok(c) => c,
-        // Snapshot files written when ACLOS has nothing to save are exactly
-        // 48 bytes of hex → 1 block. Treat anything too short to decrypt as
-        // "no nick" rather than blowing up the whole account.
-        Err(_) => return Ok(SnapshotData::default()),
-    };
-    if cipher.is_empty() {
+    match parse_snapshot_db_checked(path, openid) {
+        Ok(data) => Ok(data),
+        Err(ParseError::Io(error)) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(error.into())
+        }
+        Err(_) => Ok(SnapshotData::default()),
+    }
+}
+
+/// Strict optional-input read for the indexer: failure must not erase known facts.
+pub fn parse_snapshot_db_checked(path: &Path, openid: &str) -> Result<SnapshotData, ParseError> {
+    let bytes = std::fs::read(path)?;
+    let hex_text = std::str::from_utf8(&bytes)?.trim_start_matches('\u{feff}');
+    let cipher = decode_hex(hex_text)?;
+    let (key, iv) = derive_key_iv(openid);
+    let plain = aes_decrypt(&cipher, &key, &iv)?;
+    let json_text = String::from_utf8(plain)?;
+    let raw: serde_json::Value = serde_json::from_str(json_text.trim_start_matches('\u{feff}'))?;
+    let obj = raw.as_object().ok_or(ParseError::NotAnObject)?;
+    if obj.is_empty() {
         return Ok(SnapshotData::default());
     }
-    let (key, iv) = derive_key_iv(openid);
-    let plain = match aes_decrypt(&cipher, &key, &iv) {
-        Ok(p) => p,
-        Err(_) => return Ok(SnapshotData::default()),
-    };
-    let json_text = match String::from_utf8(plain) {
-        Ok(s) => s,
-        Err(_) => return Ok(SnapshotData::default()),
-    };
-    let raw: serde_json::Value = match serde_json::from_str(&json_text) {
-        Ok(v) => v,
-        Err(_) => return Ok(SnapshotData::default()),
-    };
-    let obj = match raw.as_object() {
-        Some(o) => o,
-        None => return Ok(SnapshotData::default()),
-    };
-    // Try the known key first, then fall back to "first array value" so we
-    // stay robust against ACLOS renaming the key prefix.
     let expected_key = format!("key_snapshot_list{}", openid);
     let list = obj
         .get(&expected_key)
-        .or_else(|| obj.values().find(|v| v.is_array()));
-
-    let Some(list) = list.and_then(|v| v.as_array()) else {
-        return Ok(SnapshotData::default());
-    };
-
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| ParseError::NoMatchList(expected_key.clone()))?;
     // nick/tag: prefer the chronologically latest record that carries them
     // (matches_time), so a rename is reflected instead of first-wins stale data.
     let mut nick: Option<String> = None;
@@ -169,8 +150,9 @@ pub fn parse_snapshot_db(path: &Path, openid: &str) -> Result<SnapshotData, Pars
         let Some(snap) = snap else { continue };
         let rec_time = rec
             .get("matches_time")
-            .and_then(|v| v.as_i64())
-            .or_else(|| snap.get("ss_time").and_then(|v| v.as_i64()))
+            .filter(|v| !v.is_null())
+            .or_else(|| snap.get("ss_time"))
+            .and_then(|v| v.as_i64().or_else(|| v.as_str()?.trim().parse().ok()))
             .unwrap_or(0);
         let cand_nick = snap
             .get("ss_nick")
@@ -244,8 +226,8 @@ pub fn parse_snapshot_db(path: &Path, openid: &str) -> Result<SnapshotData, Pars
         let type_str = snap
             .get("ss_type_str")
             .and_then(|v| v.as_str())
-            .unwrap_or(achv)
-            .to_string();
+            .map(str::to_string)
+            .unwrap_or_else(|| achv.to_uppercase());
         achievements.push(SnapshotAchievement {
             matches_id: mid.to_string(),
             achv_type: achv.to_string(),
@@ -301,6 +283,7 @@ mod tests {
             "null",
             "[]",
             r#"{"other":true}"#,
+            r#"{"future_field":[]}"#,
             r#"{"key_wonderful_list_test":null}"#,
         ] {
             assert!(
@@ -329,6 +312,35 @@ mod tests {
     }
 
     #[test]
+    fn nullable_optional_fields_preserve_unknown_facts_and_reject_wrong_types() {
+        let parsed = parse_json(r#"{"key_wonderful_list_test":[{"map":null,"agent":null,"stats":{"kills":null,"has_won":null,"rounds_won":null},"videos":null},{"stats":null,"videos":[{"rounds":null},{"rounds":[{"round_id":null,"round_clips":null,"round_honors":null}]}]}]}"#, "test").unwrap();
+        assert_eq!(parsed.matches[0].stats.result_known, Some(false));
+        assert_eq!(parsed.matches[0].stats.score_known, Some(false));
+        assert_eq!(
+            parsed.matches[0]
+                .stats
+                .missing_stats
+                .as_ref()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert!(parsed.matches[0].videos.is_empty());
+        assert!(parsed.matches[1].videos[0].rounds.is_empty());
+        for record in [
+            r#"{"stats":{"kills":{}}}"#,
+            r#"{"videos":{}}"#,
+            r#"{"videos":[{"rounds":"bad"}]}"#,
+        ] {
+            assert!(parse_json(
+                &format!(r#"{{"key_wonderful_list_test":[{record}]}}"#),
+                "test"
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
     fn missing_stats_are_distinct_from_explicit_zero() {
         let parsed = parse_json(r#"{"key_wonderful_list_test":[{"stats":{"kills":0,"deaths":0,"assists":0,"score":0}},{"stats":{"kills":0}}]}"#, "test").unwrap();
         assert_eq!(parsed.matches[0].stats.missing_stats, Some(vec![]));
@@ -342,7 +354,7 @@ mod tests {
     fn snapshot_metadata_uses_latest_known_facts_in_any_order() {
         use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
         let value = serde_json::json!({"key_snapshot_list123": [
-            {"matches_id":"award","matches_time":2,"snapshot":{"ss_type":"match","ss_achieve_type":"svp"}},
+            {"matches_id":"award","matches_time":"2","snapshot":{"ss_type":"match","ss_achieve_type":"svp"}},
             {"matches_id":"award","matches_time":1,"snapshot":{"ss_type":"match","ss_achieve_type":"mvp","ss_result_infos":{"HasWon":"0"}}},
             {"matches_id":"unknown","snapshot":{"ss_type":"match","ss_result_infos":{"IsDraw":2,"HasWon":"unknown"}}}
         ]});
@@ -364,6 +376,25 @@ mod tests {
         assert_eq!(parsed.match_details[0].has_won, Some(false));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn encrypted_hex_and_plaintext_bom_are_accepted_readonly() {
+        use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+        let text = "\u{feff}{\"key_wonderful_list_123\":[]}";
+        let (key, iv) = derive_key_iv("123");
+        let mut buffer = vec![0; text.len() + 16];
+        buffer[..text.len()].copy_from_slice(text.as_bytes());
+        let cipher = cbc::Encryptor::<aes::Aes256>::new_from_slices(&key, &iv)
+            .unwrap()
+            .encrypt_padded_mut::<Pkcs7>(&mut buffer, text.len())
+            .unwrap();
+        let bytes = format!("\u{feff}{}", hex::encode(cipher)).into_bytes();
+        let path = std::env::temp_dir().join(format!("wui-bom-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(parse_wonderful_db(&path, "123").unwrap().matches.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_file(path).unwrap();
     }
 
     fn fixture_dir() -> PathBuf {

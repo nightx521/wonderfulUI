@@ -7,7 +7,7 @@ use crate::parser;
 use crate::parser::model::{MatchRecord, SnapshotAchievement};
 use rayon::prelude::*;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
@@ -121,23 +121,46 @@ fn read_snapshot_for_account(
     dir: &Path,
     openid: &str,
     identity: &AclosIdentityIndex,
+    log_errors: bool,
 ) -> (
     Option<String>,
     Option<String>,
     Vec<SnapshotAchievement>,
     Vec<crate::parser::model::SnapshotMatchDetail>,
+    bool,
+    bool,
 ) {
     let snapshot_path = dir.join(format!("snapshot{}", openid));
-    let (snap_nick, snap_tag, achievements, match_details) =
-        match parser::parse_snapshot_db(&snapshot_path, openid) {
-            Ok(data) => (data.nick, data.tag, data.achievements, data.match_details),
-            Err(_) => (None, None, Vec::new(), Vec::new()),
+    let (snap_nick, snap_tag, achievements, match_details, valid, retry) =
+        match parser::reader::parse_snapshot_db_checked(&snapshot_path, openid) {
+            Ok(data) => (
+                data.nick,
+                data.tag,
+                data.achievements,
+                data.match_details,
+                true,
+                false,
+            ),
+            Err(error) => {
+                let retry = error.code() != "file_missing";
+                if log_errors && retry {
+                    crate::app_log::write(
+                        crate::app_log::LogLevel::Warn,
+                        "snapshot-read",
+                        format!(
+                            "account={openid}; code={}; retaining prior metadata; {error}",
+                            error.code()
+                        ),
+                    );
+                }
+                (None, None, Vec::new(), Vec::new(), false, retry)
+            }
         };
     // Nick/tag: prefer ACLOS Local Storage LevelDB role cache
     // (`ACLOS_USER_ROLES_INFO` / `acloshighlight_user_<openid>`), then snapshot.
     // Achievements stay snapshot-only.
     let (nick, tag) = identity.merge_with_snapshot(openid, snap_nick, snap_tag);
-    (nick, tag, achievements, match_details)
+    (nick, tag, achievements, match_details, valid, retry)
 }
 
 fn upsert_source(conn: &Connection, dir: &Path, now: i64) -> rusqlite::Result<()> {
@@ -238,6 +261,7 @@ fn upsert_account(
     tag: Option<String>,
     achievements: &[SnapshotAchievement],
     match_details: &[crate::parser::model::SnapshotMatchDetail],
+    snapshot_valid: bool,
     parse_error: Option<&str>,
     parse_error_code: Option<&str>,
     now: i64,
@@ -250,11 +274,11 @@ fn upsert_account(
          )
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(openid) DO UPDATE SET
-           nick = excluded.nick,
-           tag = excluded.tag,
+           nick = COALESCE(excluded.nick, accounts.nick),
+           tag = COALESCE(excluded.tag, accounts.tag),
            parse_error = excluded.parse_error,
            parse_error_code = excluded.parse_error_code,
-           match_details_json = excluded.match_details_json,
+           match_details_json = CASE WHEN ?14 THEN excluded.match_details_json ELSE accounts.match_details_json END,
            source_id = excluded.source_id,
            source_path = excluded.source_path,
            source_size_bytes = excluded.source_size_bytes,
@@ -275,9 +299,13 @@ fn upsert_account(
             snapshot_meta.and_then(|m| m.mtime_ms),
             now,
             parse_error_code,
-            serde_json::to_string(match_details).unwrap_or_else(|_| "[]".into())
+            serde_json::to_string(match_details).unwrap_or_else(|_| "[]".into()),
+            snapshot_valid,
         ],
     )?;
+    if !snapshot_valid {
+        return Ok(());
+    }
     conn.execute(
         "DELETE FROM snapshot_achievements WHERE openid = ?1 AND source_id = ?2",
         params![openid, ACLOS_SOURCE_ID],
@@ -410,6 +438,46 @@ fn account_is_fresh(
 fn file_mtime_ms(path: &str) -> Option<i64> {
     let meta = std::fs::metadata(path).ok()?;
     metadata_mtime_ms(&meta)
+}
+
+/// Validate the complete account before changing any rows. A repeated identical
+/// video is harmless; conflicting identities must never move an existing video.
+fn validate_account_records(conn: &Connection, matches: &mut [MatchRecord]) -> Result<(), String> {
+    let mut match_ids = HashSet::new();
+    let mut videos: HashMap<String, (String, String)> = HashMap::new();
+    for m in matches {
+        if m.matches_id.is_empty() || !match_ids.insert(m.matches_id.clone()) {
+            return Err("missing or duplicate match identifier".into());
+        }
+        let mut unique = Vec::new();
+        for video in std::mem::take(&mut m.videos) {
+            if video.video_id.is_empty() {
+                return Err("missing video identifier".into());
+            }
+            let raw = serde_json::to_string(&video).map_err(|e| e.to_string())?;
+            if let Some((owner, previous)) = videos.get(&video.video_id) {
+                if owner == &m.matches_id && previous == &raw {
+                    continue;
+                }
+                return Err("conflicting video identifier in source account".into());
+            }
+            let previous_owner: Option<String> = conn
+                .query_row(
+                    "SELECT match_id FROM videos WHERE id = ?1",
+                    [&video.video_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if previous_owner.is_some_and(|owner| owner != m.matches_id) {
+                return Err("video identifier already belongs to another match".into());
+            }
+            videos.insert(video.video_id.clone(), (m.matches_id.clone(), raw));
+            unique.push(video);
+        }
+        m.videos = unique;
+    }
+    Ok(())
 }
 
 fn upsert_videos(conn: &Connection, m: &MatchRecord, now: i64) -> rusqlite::Result<usize> {
@@ -640,6 +708,7 @@ pub fn scrape_wonderful_dir_with_mode(
         achievements: Vec<SnapshotAchievement>,
         match_details: Vec<crate::parser::model::SnapshotMatchDetail>,
         snapshot_meta: Option<SourceFileMeta>,
+        snapshot_valid: bool,
     }
 
     let identity_for_parse = Arc::clone(&identity);
@@ -647,21 +716,22 @@ pub fn scrape_wonderful_dir_with_mode(
         .par_iter()
         .map(|&(idx, (openid, path, source_meta))| {
             let snapshot_meta = snapshot_file_meta(dir, openid);
-            let (nick, tag, achievements, match_details) =
-                read_snapshot_for_account(dir, openid, identity_for_parse.as_ref());
+            let (nick, tag, achievements, match_details, snapshot_valid, retry_snapshot) =
+                read_snapshot_for_account(dir, openid, identity_for_parse.as_ref(), app.is_some());
             let result = parser::parse_wonderful_db(path, openid)
                 .map_err(|e| (e.code(), format!("parse {}: {}", path.display(), e)));
             ParsedAccount {
                 idx,
                 openid: openid.clone(),
                 path: path.clone(),
-                source_meta: *source_meta,
+                source_meta: if retry_snapshot { None } else { *source_meta },
                 result,
                 nick,
                 tag,
                 achievements,
                 match_details,
                 snapshot_meta,
+                snapshot_valid,
             }
         })
         .collect();
@@ -708,8 +778,13 @@ pub fn scrape_wonderful_dir_with_mode(
             continue;
         }
 
-        let pa = &parsed[pi];
+        let pa = &mut parsed[pi];
         pi += 1;
+        if let Ok(file) = &mut pa.result {
+            if let Err(error) = validate_account_records(conn, &mut file.matches) {
+                pa.result = Err(("index_conflict", error));
+            }
+        }
 
         if let Some(a) = app {
             let _ = a.emit(
@@ -752,6 +827,7 @@ pub fn scrape_wonderful_dir_with_mode(
                                 pa.tag.clone(),
                                 &pa.achievements,
                                 &pa.match_details,
+                                pa.snapshot_valid,
                                 None,
                                 None,
                                 now,
@@ -772,6 +848,7 @@ pub fn scrape_wonderful_dir_with_mode(
                         pa.tag.clone(),
                         &pa.achievements,
                         &pa.match_details,
+                        pa.snapshot_valid,
                         None,
                         None,
                         now,
@@ -897,6 +974,7 @@ pub fn scrape_wonderful_dir_with_mode(
                         pa.tag.clone(),
                         &pa.achievements,
                         &pa.match_details,
+                        pa.snapshot_valid,
                         Some(e.as_str()),
                         Some(code),
                         now,
@@ -1018,6 +1096,133 @@ mod tests {
         let bytes = hex::encode(cipher).into_bytes();
         std::fs::write(path, &bytes).unwrap();
         bytes
+    }
+
+    fn synthetic_payload(openid: &str, match_id: &str, video_id: &str) -> serde_json::Value {
+        serde_json::json!({format!("key_wonderful_list_{openid}"):[{
+            "matches_id":match_id,"openID":openid,
+            "videos":[{"video_id":video_id,"video_src":""}]
+        }]})
+    }
+
+    #[test]
+    fn snapshot_failures_preserve_metadata_and_retry_without_source_changes() {
+        let dir = std::env::temp_dir().join(format!("wui-snapshot-retry-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = open_memory_for_test().unwrap();
+        migrate(&conn).unwrap();
+        let source = write_encrypted_fixture(
+            &dir.join("123"),
+            "123",
+            &synthetic_payload("123", "fixture-match", "fixture-video").to_string(),
+        );
+        let snapshot = write_encrypted_fixture(
+            &dir.join("snapshot123"),
+            "123",
+            r#"{"key_snapshot_list123":[{"matches_id":"fixture-match","snapshot":{"ss_nick":"Fixture","ss_type":"match","ss_achieve_type":"mvp","ss_result_infos":{"HasWon":true}}}]}"#,
+        );
+        scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Full, None).unwrap();
+        for bad in [b"not hex".as_slice(), b"".as_slice()] {
+            std::fs::write(dir.join("snapshot123"), bad).unwrap();
+            for mode in [ScrapeMode::Full, ScrapeMode::Incremental] {
+                let result =
+                    scrape_wonderful_dir_with_mode(&conn, &dir, "test", mode, None).unwrap();
+                assert_eq!(result.skipped_accounts, 0);
+                let view = crate::library::db::load_library_view(&conn, "fixture").unwrap();
+                assert_eq!(view.accounts[0].nick.as_deref(), Some("Fixture"));
+                assert_eq!(view.accounts[0].achievements.len(), 1);
+                assert_eq!(view.accounts[0].match_details[0].has_won, Some(true));
+                assert_eq!(view.matches.len(), 1);
+            }
+        }
+        std::fs::write(dir.join("snapshot123"), &snapshot).unwrap();
+        let repaired =
+            scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Incremental, None)
+                .unwrap();
+        assert_eq!(repaired.skipped_accounts, 0);
+        let fresh =
+            scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Incremental, None)
+                .unwrap();
+        assert_eq!(fresh.skipped_accounts, 1);
+        std::fs::remove_file(dir.join("snapshot123")).unwrap();
+        scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Full, None).unwrap();
+        let view = crate::library::db::load_library_view(&conn, "fixture").unwrap();
+        assert_eq!(view.accounts[0].achievements.len(), 1);
+        assert_eq!(std::fs::read(dir.join("123")).unwrap(), source);
+        write_encrypted_fixture(&dir.join("123"), "123", r#"{"future_field":[]}"#);
+        let invalid =
+            scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Full, None).unwrap();
+        assert_eq!(invalid.errors_seen, 1);
+        assert_eq!(
+            crate::library::db::load_library_view(&conn, "fixture")
+                .unwrap()
+                .matches
+                .len(),
+            1
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn duplicate_video_conflicts_preserve_account_and_do_not_stop_other_accounts() {
+        let dir = std::env::temp_dir().join(format!("wui-duplicate-video-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = open_memory_for_test().unwrap();
+        migrate(&conn).unwrap();
+        let mut first = synthetic_payload("123", "match-a", "video-a");
+        let mut second = synthetic_payload("456", "match-b", "video-b");
+        write_encrypted_fixture(&dir.join("123"), "123", &first.to_string());
+        write_encrypted_fixture(&dir.join("456"), "456", &second.to_string());
+        scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Full, None).unwrap();
+        let same = first["key_wonderful_list_123"][0]["videos"][0].clone();
+        first["key_wonderful_list_123"][0]["videos"]
+            .as_array_mut()
+            .unwrap()
+            .push(same);
+        write_encrypted_fixture(&dir.join("123"), "123", &first.to_string());
+        let dedup =
+            scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Full, None).unwrap();
+        assert_eq!((dedup.errors_seen, dedup.videos_seen), (0, 2));
+        let mut conflicting = first["key_wonderful_list_123"][0].clone();
+        conflicting["matches_id"] = serde_json::json!("match-c");
+        first["key_wonderful_list_123"]
+            .as_array_mut()
+            .unwrap()
+            .push(conflicting);
+        second["key_wonderful_list_456"][0]["stats"] = serde_json::json!({"score":99});
+        write_encrypted_fixture(&dir.join("123"), "123", &first.to_string());
+        write_encrypted_fixture(&dir.join("456"), "456", &second.to_string());
+        let result =
+            scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Full, None).unwrap();
+        assert_eq!(result.errors_seen, 1);
+        let view = crate::library::db::load_library_view(&conn, "fixture").unwrap();
+        assert_eq!(view.matches.len(), 2);
+        assert_eq!(
+            view.accounts
+                .iter()
+                .find(|a| a.openid == "123")
+                .unwrap()
+                .error_code
+                .as_deref(),
+            Some("index_conflict")
+        );
+        assert_eq!(
+            view.matches
+                .iter()
+                .find(|m| m.open_id == "456")
+                .unwrap()
+                .stats
+                .score,
+            99
+        );
+        assert_eq!(
+            conn.query_row("SELECT match_id FROM videos WHERE id='video-a'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            "match-a"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
