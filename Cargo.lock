@@ -5289,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "wonderful-ui"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "aes",
  "base64 0.22.1",
