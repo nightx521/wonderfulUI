@@ -43,6 +43,9 @@ Account read failures use the optional backend `errorCode` and curated copy in
 them as user-facing error text. Named empty accounts remain visible with zero
 highlights and a normal empty state. An encrypted empty object is valid empty
 highlight data, not a failure or evidence that recording was disabled.
+`partial_records` means valid matches were updated while individual records were
+quarantined. Keep that account name and match count visible; show a warning and
+the validated skipped count without marking the entire account as unreadable.
 
 - The app uses a stable DOM skeleton.
 - `App.vue` builds `.app`, `.topbar`, `.panes`, and the pane containers once after load. State management is driven by 8 Pinia stores (`account`, `filter`, `detail`, `player`, `settings`, `share`, `ui`, `update`) and vue-router (`createMemoryHistory`).

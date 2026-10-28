@@ -13,6 +13,20 @@ vi.mock('sortablejs', () => ({
 }));
 
 describe('AccountSidebar rename lifecycle', () => {
+  test('keeps a partially updated account name and count visible with a specific warning', () => {
+    const wrapper = mount(AccountSidebar, { global: { plugins: [createTestingPinia({ createSpy: vi.fn,
+      initialState: { account: { accounts: [{ openid: 'partial', path: '', matchCount: 12,
+        error: '{"skipped_records":3}', errorCode: 'partial_records', nick: '示例账户' }],
+        matches: [], selectedAccountId: 'partial' } },
+    })] } });
+    const row = wrapper.get('.account.is-warning');
+    expect(row.classes()).not.toContain('is-error');
+    expect(row.get('.account-count').text()).toBe('12 !');
+    expect(row.attributes('data-tip')).toContain('部分记录已跳过（3 条）');
+    expect(row.attributes('data-tip')).toContain('正常记录已更新');
+    wrapper.unmount();
+  });
+
   test('shows zero instead of the unfiltered total when an active filter has no account hits', () => {
     const match = {
       matches_id: 'match-a',

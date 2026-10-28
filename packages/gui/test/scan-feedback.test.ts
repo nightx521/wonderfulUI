@@ -24,4 +24,10 @@ describe('library scan feedback', () => {
     expect(scanCompletionFeedback('full', Number.NaN).tone).toBe('ok');
     expect(SCAN_FAILURE_MESSAGE).not.toContain('\\');
   });
+
+  test('record quarantine is distinct from a complete account read failure', () => {
+    expect(scanCompletionFeedback('full', 2, 2).message).toContain('正常记录已更新');
+    expect(scanCompletionFeedback('incremental', 3, 2).message).toContain('读取失败');
+    expect(scanCompletionFeedback('full', 2, 2).tone).toBe('error');
+  });
 });

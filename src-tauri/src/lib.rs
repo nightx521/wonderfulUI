@@ -255,14 +255,25 @@ fn load_after_startup_scrape(
         app,
     ) {
         Ok(summary) => library::db::load_library_view(conn, dir)
-            .map(|view| StartupLoadOutcome {
-                view,
-                warning: (summary.errors_seen > 0).then(|| {
-                    format!(
-                        "{} 个账户读取失败，请查看账户提示或设置中的日志",
-                        summary.errors_seen
-                    )
-                }),
+            .map(|view| {
+                let only_partial = summary.errors_seen > 0
+                    && view
+                        .accounts
+                        .iter()
+                        .filter(|a| a.error_code.as_deref() == Some("partial_records"))
+                        .count()
+                        == summary.errors_seen;
+                let warning = (summary.errors_seen > 0).then(|| {
+                    if only_partial {
+                        "正常记录已更新，部分记录已跳过，请查看账户提示或设置中的日志".into()
+                    } else {
+                        format!(
+                            "{} 个账户读取失败，请查看账户提示或设置中的日志",
+                            summary.errors_seen
+                        )
+                    }
+                });
+                StartupLoadOutcome { view, warning }
             })
             .map_err(|e| format!("load library: {}", e)),
         Err(scrape_error) => {
@@ -382,7 +393,7 @@ async fn scan_shell(app: tauri::AppHandle) -> Result<ScanShellPayload, String> {
                             "wui://phase",
                             serde_json::json!({
                                 "phase": "error",
-                                "label": "源数据刷新失败，已加载现有资料库",
+                                "label": "部分资料未能读取，已显示可用记录",
                                 "sub": warning,
                             }),
                         );

@@ -173,8 +173,9 @@ function countText(a: Account): string {
       ? `${filteredCount(a)} / ${account.matches.length}`
       : `${account.matches.length}`;
   }
-  if (a.error) return '!';
-  return hasActiveFilters.value ? `${filteredCount(a)} / ${a.matchCount}` : `${a.matchCount}`;
+  if (a.error && a.errorCode !== 'partial_records') return '!';
+  const count = hasActiveFilters.value ? `${filteredCount(a)} / ${a.matchCount}` : `${a.matchCount}`;
+  return a.error && a.errorCode === 'partial_records' ? `${count} !` : count;
 }
 
 function rowTip(a: Account): string {
@@ -196,7 +197,8 @@ function rowTip(a: Account): string {
 function rowClass(a: Account): Record<string, boolean> {
   return {
     'is-selected': a.openid === account.selectedAccountId,
-    'is-error': !!a.error,
+    'is-error': !!a.error && a.errorCode !== 'partial_records',
+    'is-warning': !!a.error && a.errorCode === 'partial_records',
     'is-all': a.openid === ALL_ACCOUNTS,
     'is-editing': editingOpenid.value === a.openid,
     'is-filter-empty': hasActiveFilters.value && filteredCount(a) === 0 && a.openid !== account.selectedAccountId,
@@ -462,6 +464,7 @@ onUnmounted(() => {
 }
 .account.is-error .account-name { color: var(--ink-3); text-decoration: line-through; }
 .account.is-error .account-count { color: var(--warn); }
+.account.is-warning .account-count { color: var(--warn); }
 .account.is-filter-empty:not(.is-selected) .account-name {
   color: var(--ink-3);
 }

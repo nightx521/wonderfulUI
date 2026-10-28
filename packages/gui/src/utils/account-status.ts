@@ -61,6 +61,18 @@ const unknown: AccountReadFeedback = {
 /** Raw errors can contain private paths and identifiers; only show curated copy. */
 export function accountReadFeedback(account?: { error?: string; errorCode?: string } | null): AccountReadFeedback | null {
   if (!account?.error?.trim()) return null;
+  if (account.errorCode === 'partial_records') {
+    let count = '';
+    try {
+      const n = JSON.parse(account.error).skipped_records;
+      if (Number.isSafeInteger(n) && n > 0) count = `（${n} 条）`;
+    } catch { /* Older diagnostics may not contain structured counts. */ }
+    return {
+      title: `部分记录已跳过${count}`,
+      cause: '部分记录缺少对局编号或存在编号冲突，正常记录已更新，原有资料已保留。',
+      action: '这不影响其它对局；源数据补全后刷新可重试，详细分类见日志。',
+    };
+  }
   return account.errorCode && Object.hasOwn(feedback, account.errorCode)
     ? feedback[account.errorCode]!
     : unknown;

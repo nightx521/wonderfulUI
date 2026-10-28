@@ -91,7 +91,8 @@ export function useAppShortcuts(): void {
     if (mode === 'full') ui.showScanOverlay();
     try {
       const result = await account.scrapeLibrary(mode);
-      const feedback = scanCompletionFeedback(mode, result.totalErrors);
+      const feedback = scanCompletionFeedback(mode, result.totalErrors,
+        result.accounts.filter(a => a.error && a.errorCode === 'partial_records').length);
       ui.showToast(feedback.message, feedback.tone);
     } catch (e) {
       clientLog('error', 'library-scan', e instanceof Error ? e.message : String(e));

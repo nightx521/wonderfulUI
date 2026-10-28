@@ -141,6 +141,11 @@ function selectInitialAccount(): void {
   }
 }
 
+function hasOnlySkippedRecords(): boolean {
+  return account.totalErrors > 0
+    && account.totalErrors === account.accounts.filter(a => a.error && a.errorCode === 'partial_records').length;
+}
+
 function scheduleLateStartupRefresh(session: StartupRefreshSession): void {
   if (session.lateFollowupScheduled) return;
   session.lateFollowupScheduled = true;
@@ -162,7 +167,9 @@ function scheduleLateStartupRefresh(session: StartupRefreshSession): void {
     }
     const message = result.error ?? '后台资料库刷新失败';
     clientLog(result.status === 'degraded' ? 'warn' : 'error', 'boot', message);
-    ui.showToast('后台资料库刷新失败，当前显示可用的本地资料库', 'error');
+    ui.showToast(result.status === 'degraded' && applied && hasOnlySkippedRecords()
+      ? '正常记录已更新，部分记录已跳过，请查看账户提示'
+      : '后台资料库刷新失败，当前显示可用的本地资料库', 'error');
   }).catch(error => {
     if (appDisposed) return;
     clientLog('error', 'boot', `late refresh follow-up failed: ${(error as Error)?.message ?? String(error)}`);
@@ -264,7 +271,9 @@ async function performBoot() {
     if (refreshResult.status === 'degraded') {
       const message = refreshResult.error ?? '源数据暂时不可用';
       clientLog('warn', 'boot', `background refresh degraded: ${message}`);
-      ui.showToast('源数据刷新失败，当前显示可用的本地资料库', 'error');
+      ui.showToast(hasOnlySkippedRecords()
+        ? '正常记录已更新，部分记录已跳过，请查看账户提示'
+        : '源数据刷新失败，当前显示可用的本地资料库', 'error');
     } else if (refreshResult.status === 'timeout') {
       clientLog('warn', 'boot', 'background refresh exceeded the 30 second boot wait');
     }

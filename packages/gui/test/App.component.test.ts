@@ -27,7 +27,35 @@ afterEach(() => {
 });
 
 describe('App startup refresh lifecycle', () => {
-  test('keeps the terminal listener after timeout and guarded-reloads on late completion', async () => {
+  test('reports skipped records after a partial startup refresh without claiming the source failed', async () => {
+    let terminalHandler!: (event: { payload: Record<string, unknown> }) => void;
+    vi.spyOn(tauriAdapter, 'listen').mockImplementation(async (_, handler) => {
+      terminalHandler = handler as typeof terminalHandler;
+      return () => {};
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pinia = createTestingPinia({ createSpy: vi.fn });
+    setActivePinia(pinia);
+    const account = useAccountStore();
+    const ui = useUiStore();
+    account.totalErrors = 1;
+    account.accounts = [{ openid: 'partial', path: '', matchCount: 12,
+      error: '{"skipped_records":1}', errorCode: 'partial_records' }];
+    vi.mocked(account.probeAclos).mockResolvedValue({ dir: '', dirExists: true, hasAccounts: true });
+    vi.mocked(account.scanShell).mockResolvedValue(undefined);
+    vi.mocked(account.loadLibrary).mockResolvedValue(undefined);
+    vi.mocked(account.cacheAssets).mockResolvedValue(undefined);
+    const wrapper = shallowMount(App, { global: { plugins: [pinia],
+      stubs: { BootOverlay: BootOverlayStub, RouterView: true, Teleport: true } } });
+    await flushPromises();
+    terminalHandler({ payload: { status: 'degraded', error: 'partial records' } });
+    await flushPromises();
+    expect(ui.showToast).toHaveBeenCalledWith('正常记录已更新，部分记录已跳过，请查看账户提示', 'error');
+    expect(ui.showToast).not.toHaveBeenCalledWith('源数据刷新失败，当前显示可用的本地资料库', 'error');
+    wrapper.unmount();
+  });
+
+  test.each(['finished', 'degraded'] as const)('keeps the listener after timeout and guarded-reloads on late %s', async status => {
     let terminalHandler!: (event: { payload: Record<string, unknown> }) => void;
     const unlisten = vi.fn();
     vi.spyOn(tauriAdapter, 'listen').mockImplementation(async (event, handler) => {
@@ -72,11 +100,18 @@ describe('App startup refresh lifecycle', () => {
     expect(useUpdateStore().debugAvailable).toHaveBeenCalledWith({ silent: true });
     expect(unlisten).not.toHaveBeenCalled();
 
-    terminalHandler({ payload: { status: 'finished' } });
+    if (status === 'degraded') {
+      account.totalErrors = 1;
+      account.accounts = [{ openid: 'partial', path: '', matchCount: 12,
+        error: '{"skipped_records":1}', errorCode: 'partial_records' }];
+    }
+    terminalHandler({ payload: { status } });
     await flushPromises();
     expect(unlisten).toHaveBeenCalledTimes(1);
     expect(account.loadLibraryIfCurrent).toHaveBeenCalledWith(account.libraryRevision);
-    expect(ui.showToast).toHaveBeenCalledWith('资料库已在后台刷新完成', 'ok');
+    expect(ui.showToast).toHaveBeenCalledWith(status === 'finished'
+      ? '资料库已在后台刷新完成' : '正常记录已更新，部分记录已跳过，请查看账户提示',
+      status === 'finished' ? 'ok' : 'error');
     wrapper.unmount();
   });
 

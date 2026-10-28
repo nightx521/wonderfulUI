@@ -26,4 +26,16 @@ describe('account read feedback', () => {
       expect(accountReadFeedback({ error: 'private details', errorCode })?.title).toBe('账户读取失败');
     }
   });
+
+  test('partial reads explain the skipped count while preserving successful updates', () => {
+    const result = accountReadFeedback({ errorCode: 'partial_records', error: '{"skipped_records":4,"private":"secret"}' });
+    expect(result?.title).toBe('部分记录已跳过（4 条）');
+    expect(result?.cause).toContain('正常记录已更新');
+    expect(JSON.stringify(result)).not.toContain('secret');
+    for (const error of ['private details', 'null', '{"skipped_records":"private"}', '{"skipped_records":-1}', '{"skipped_records":1e99}']) {
+      const feedback = accountReadFeedback({ errorCode: 'partial_records', error });
+      expect(feedback?.title).toBe('部分记录已跳过');
+      expect(JSON.stringify(feedback)).not.toContain('private');
+    }
+  });
 });

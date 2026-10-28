@@ -440,44 +440,90 @@ fn file_mtime_ms(path: &str) -> Option<i64> {
     metadata_mtime_ms(&meta)
 }
 
-/// Validate the complete account before changing any rows. A repeated identical
-/// video is harmless; conflicting identities must never move an existing video.
-fn validate_account_records(conn: &Connection, matches: &mut [MatchRecord]) -> Result<(), String> {
-    let mut match_ids = HashSet::new();
+/// Quarantine incomplete/conflicting records before writing. Do not reject other
+/// matches in the account or let source order choose a conflicting video's owner.
+#[derive(Default, serde::Serialize)]
+struct RecordValidation {
+    skipped_records: usize,
+    missing_match_ids: usize,
+    duplicate_match_ids: usize,
+    conflicting_records: usize,
+}
+
+fn validate_account_records(
+    conn: &Connection,
+    openid: &str,
+    matches: &mut Vec<MatchRecord>,
+) -> rusqlite::Result<RecordValidation> {
+    let mut match_ids = HashMap::<String, usize>::new();
     let mut videos: HashMap<String, (String, String)> = HashMap::new();
-    for m in matches {
-        if m.matches_id.is_empty() || !match_ids.insert(m.matches_id.clone()) {
-            return Err("missing or duplicate match identifier".into());
+    let mut conflicting_videos = HashSet::new();
+    for m in matches.iter() {
+        *match_ids.entry(m.matches_id.clone()).or_default() += 1;
+        // Missing identities are not real matches and cannot claim video IDs.
+        if m.matches_id.trim().is_empty() {
+            continue;
         }
-        let mut unique = Vec::new();
-        for video in std::mem::take(&mut m.videos) {
-            if video.video_id.is_empty() {
-                return Err("missing video identifier".into());
-            }
-            let raw = serde_json::to_string(&video).map_err(|e| e.to_string())?;
+        for video in &m.videos {
+            let raw = serde_json::to_string(video).expect("video model is serializable");
             if let Some((owner, previous)) = videos.get(&video.video_id) {
-                if owner == &m.matches_id && previous == &raw {
-                    continue;
+                if owner != &m.matches_id || previous != &raw {
+                    conflicting_videos.insert(video.video_id.clone());
                 }
-                return Err("conflicting video identifier in source account".into());
+            } else {
+                videos.insert(video.video_id.clone(), (m.matches_id.clone(), raw));
             }
+        }
+    }
+    let mut report = RecordValidation::default();
+    let mut accepted = Vec::new();
+    for mut m in std::mem::take(matches) {
+        if m.matches_id.trim().is_empty() {
+            report.missing_match_ids += 1;
+            report.skipped_records += 1;
+            continue;
+        }
+        if match_ids[&m.matches_id] > 1 {
+            report.duplicate_match_ids += 1;
+            report.skipped_records += 1;
+            continue;
+        }
+        let previous_account: Option<String> = conn
+            .query_row(
+                "SELECT openid FROM matches WHERE id = ?1",
+                [&m.matches_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let mut conflict = (!m.open_id.is_empty() && m.open_id != openid)
+            || previous_account.is_some_and(|owner| !owner.is_empty() && owner != openid);
+        for video in &m.videos {
             let previous_owner: Option<String> = conn
                 .query_row(
                     "SELECT match_id FROM videos WHERE id = ?1",
                     [&video.video_id],
                     |row| row.get(0),
                 )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            if previous_owner.is_some_and(|owner| owner != m.matches_id) {
-                return Err("video identifier already belongs to another match".into());
-            }
-            videos.insert(video.video_id.clone(), (m.matches_id.clone(), raw));
-            unique.push(video);
+                .optional()?;
+            conflict |= video.video_id.trim().is_empty()
+                || conflicting_videos.contains(&video.video_id)
+                || previous_owner.is_some_and(|owner| owner != m.matches_id);
         }
-        m.videos = unique;
+        if conflict {
+            report.conflicting_records += 1;
+            report.skipped_records += 1;
+            continue;
+        }
+        // The numeric source filename is the account identity even when a
+        // partial ACLOS match omits openID. Never replace an explicit other owner.
+        m.open_id = openid.to_string();
+        let mut seen = HashSet::new();
+        m.videos.retain(|v| seen.insert(v.video_id.clone()));
+        accepted.push(m);
     }
-    Ok(())
+    *matches = accepted;
+    Ok(report)
 }
 
 fn upsert_videos(conn: &Connection, m: &MatchRecord, now: i64) -> rusqlite::Result<usize> {
@@ -780,11 +826,20 @@ pub fn scrape_wonderful_dir_with_mode(
 
         let pa = &mut parsed[pi];
         pi += 1;
+        let mut validation = RecordValidation::default();
         if let Ok(file) = &mut pa.result {
-            if let Err(error) = validate_account_records(conn, &mut file.matches) {
-                pa.result = Err(("index_conflict", error));
+            match validate_account_records(conn, &pa.openid, &mut file.matches) {
+                Ok(report) => validation = report,
+                Err(error) => {
+                    let message = format!("validate account records: {error}");
+                    mark_scrape_job_failed(conn, &job_id, &message);
+                    return Err(message);
+                }
             }
         }
+        let partial_error = (validation.skipped_records > 0).then(|| {
+            serde_json::to_string(&validation).expect("validation counts are serializable")
+        });
 
         if let Some(a) = app {
             let _ = a.emit(
@@ -808,7 +863,7 @@ pub fn scrape_wonderful_dir_with_mode(
 
                     // Empty data clears stale native matches and errors. Retain identity
                     // so a named account can explain that no local highlights exist.
-                    if file.matches.is_empty() {
+                    if file.matches.is_empty() && partial_error.is_none() {
                         purge_empty_account(&tx, &pa.openid).map_err(|e| e.to_string())?;
                         let has_name = pa.nick.as_deref().is_some_and(|n| !n.trim().is_empty())
                             || tx.query_row(
@@ -849,8 +904,8 @@ pub fn scrape_wonderful_dir_with_mode(
                         &pa.achievements,
                         &pa.match_details,
                         pa.snapshot_valid,
-                        None,
-                        None,
+                        partial_error.as_deref(),
+                        partial_error.as_ref().map(|_| "partial_records"),
                         now,
                     )
                     .map_err(|e| e.to_string())?;
@@ -862,10 +917,14 @@ pub fn scrape_wonderful_dir_with_mode(
                         videos += upsert_videos(&tx, m, now).map_err(|e| e.to_string())?;
                         events += upsert_events(&tx, m).map_err(|e| e.to_string())?;
                     }
-                    let current_ids: HashSet<&str> =
-                        file.matches.iter().map(|m| m.matches_id.as_str()).collect();
-                    purge_stale_matches(&tx, &pa.openid, &current_ids)
-                        .map_err(|e| e.to_string())?;
+                    // A partial source cannot prove old rows are stale. Preserve
+                    // those rows until a complete successful read can reconcile them.
+                    if partial_error.is_none() {
+                        let current_ids: HashSet<&str> =
+                            file.matches.iter().map(|m| m.matches_id.as_str()).collect();
+                        purge_stale_matches(&tx, &pa.openid, &current_ids)
+                            .map_err(|e| e.to_string())?;
+                    }
                     tx.commit().map_err(|e| e.to_string())?;
                     Ok((file.matches.len(), videos, events))
                 })();
@@ -888,6 +947,20 @@ pub fn scrape_wonderful_dir_with_mode(
                         return Err(message);
                     }
                 };
+
+                if let Some(message) = &partial_error {
+                    summary.errors_seen += 1;
+                    if app.is_some() {
+                        crate::app_log::write(
+                            crate::app_log::LogLevel::Warn,
+                            "account-read",
+                            format!(
+                                "account={} code=partial_records; valid records updated; {message}",
+                                pa.openid
+                            ),
+                        );
+                    }
+                }
 
                 if acc_matches == 0 {
                     let acc_duration = now_ms() - account_start;
@@ -1164,6 +1237,258 @@ mod tests {
     }
 
     #[test]
+    fn mixed_incomplete_records_refresh_valid_matches_and_preserve_prior_data() {
+        let dir = std::env::temp_dir().join(format!("wui-partial-records-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = open_memory_for_test().unwrap();
+        migrate(&conn).unwrap();
+        let old = synthetic_payload("123", "old-match", "old-video");
+        write_encrypted_fixture(&dir.join("123"), "123", &old.to_string());
+        scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Full, None).unwrap();
+        conn.execute("INSERT INTO account_preferences(openid,custom_name,sort_order,updated_at) VALUES('123','Saved name',0,1)", []).unwrap();
+        let mut mixed = synthetic_payload("123", "new-match", "new-video");
+        // Match the real failure shape: incomplete clips have videos but no
+        // match identity/account/start time, alongside complete new matches.
+        mixed["key_wonderful_list_123"][0]["openID"] = serde_json::json!("");
+        mixed["key_wonderful_list_123"].as_array_mut().unwrap().push(serde_json::json!({
+            "matches_id":"", "mode":"competitive", "videos":[{"video_id":"incomplete-video","video_type":"战技测试"}]
+        }));
+        let bytes = write_encrypted_fixture(&dir.join("123"), "123", &mixed.to_string());
+        for mode in [ScrapeMode::Full, ScrapeMode::Incremental, ScrapeMode::Full] {
+            let summary = scrape_wonderful_dir_with_mode(&conn, &dir, "test", mode, None).unwrap();
+            assert_eq!(
+                (
+                    summary.matches_seen,
+                    summary.errors_seen,
+                    summary.skipped_accounts
+                ),
+                (1, 1, 0)
+            );
+            let view = crate::library::db::load_library_view(&conn, "fixture").unwrap();
+            assert_eq!(
+                view.matches.len(),
+                2,
+                "new match must load without deleting old data"
+            );
+            assert_eq!(view.total_errors, 1);
+            let account = &view.accounts[0];
+            assert_eq!(account.error_code.as_deref(), Some("partial_records"));
+            assert_eq!(account.custom_name.as_deref(), Some("Saved name"));
+            let counts: serde_json::Value =
+                serde_json::from_str(account.error.as_ref().unwrap()).unwrap();
+            assert_eq!(counts["skipped_records"], 1);
+            let detail = crate::library::db::load_match_rounds(&conn, "123", "new-match").unwrap();
+            assert_eq!(
+                detail.open_id, "123",
+                "source filename supplies omitted account identity"
+            );
+            assert_eq!(detail.videos[0].video_id, "new-video");
+            assert_eq!(std::fs::read(dir.join("123")).unwrap(), bytes);
+        }
+        // An entirely incomplete source cannot masquerade as an empty library.
+        mixed["key_wonderful_list_123"]
+            .as_array_mut()
+            .unwrap()
+            .remove(0);
+        write_encrypted_fixture(&dir.join("123"), "123", &mixed.to_string());
+        scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Full, None).unwrap();
+        assert_eq!(
+            crate::library::db::load_library_view(&conn, "fixture")
+                .unwrap()
+                .matches
+                .len(),
+            2
+        );
+        // Once the source becomes complete, clear the warning and reconcile normally.
+        let complete = synthetic_payload("123", "new-match", "new-video");
+        write_encrypted_fixture(&dir.join("123"), "123", &complete.to_string());
+        let summary =
+            scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Incremental, None)
+                .unwrap();
+        assert_eq!(summary.errors_seen, 0);
+        let view = crate::library::db::load_library_view(&conn, "fixture").unwrap();
+        assert!(view.accounts[0].error.is_none());
+        assert_eq!(view.matches.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit local source/index copies required; never uses the live library"]
+    fn real_source_recovery_in_isolated_index() {
+        let root = std::fs::canonicalize(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("out"),
+        )
+        .unwrap();
+        let source = std::fs::canonicalize(
+            std::env::var("WUI_TEST_SOURCE_COPY").expect("source copy required"),
+        )
+        .unwrap();
+        let database = std::fs::canonicalize(
+            std::env::var("WUI_TEST_INDEX_COPY").expect("index copy required"),
+        )
+        .unwrap();
+        assert!(source.starts_with(&root) && database.starts_with(&root));
+        assert_eq!(database.file_name().unwrap(), "library-test.db");
+        let conn = Connection::open(&database).unwrap();
+        migrate(&conn).unwrap();
+        let table_digest = |table: &str| {
+            let mut stmt = conn
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .unwrap();
+            let columns = stmt.column_count();
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((0..columns)
+                        .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
+                        .collect::<Vec<_>>())
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            sha256_hex(&format!("{rows:?}"))
+        };
+        let protected = [
+            "history_devices",
+            "history_accounts",
+            "history_matches",
+            "history_videos",
+            "account_preferences",
+        ];
+        let before: Vec<_> = protected.iter().map(|t| table_digest(t)).collect();
+        let mut expected = Vec::new();
+        let mut sources = Vec::new();
+        let mut new_matches = 0;
+        for entry in std::fs::read_dir(&source)
+            .unwrap()
+            .flatten()
+            .filter(is_account_file)
+        {
+            let path = entry.path();
+            let id = entry.file_name().to_string_lossy().into_owned();
+            sources.push((path.clone(), std::fs::read(&path).unwrap()));
+            let parsed = parser::parse_wonderful_db(&path, &id).unwrap();
+            for m in parsed
+                .matches
+                .into_iter()
+                .filter(|m| !m.matches_id.trim().is_empty())
+            {
+                let exists: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM matches WHERE id=?1)",
+                        [&m.matches_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                if !exists {
+                    new_matches += 1;
+                }
+                expected.push((id.clone(), m));
+            }
+        }
+        assert!(
+            new_matches > 0,
+            "fixture must exercise actual missing new records"
+        );
+        let summary =
+            scrape_wonderful_dir_with_mode(&conn, &source, "test", ScrapeMode::Full, None).unwrap();
+        let view = crate::library::db::load_library_view(&conn, "fixture").unwrap();
+        let mut verified_videos = 0;
+        for (id, m) in &expected {
+            let detail = crate::library::db::load_match_rounds(&conn, id, &m.matches_id).unwrap();
+            assert_eq!(&detail.open_id, id);
+            assert!(view
+                .matches
+                .iter()
+                .any(|loaded| loaded.matches_id == m.matches_id && loaded.open_id == *id));
+            for v in &m.videos {
+                assert!(
+                    detail
+                        .videos
+                        .iter()
+                        .any(|loaded| loaded.video_id == v.video_id
+                            && loaded.video_src == v.video_src)
+                );
+                verified_videos += 1;
+            }
+        }
+        let first_count = view.matches.len();
+        scrape_wonderful_dir_with_mode(&conn, &source, "test", ScrapeMode::Incremental, None)
+            .unwrap();
+        assert_eq!(
+            crate::library::db::load_library_view(&conn, "fixture")
+                .unwrap()
+                .matches
+                .len(),
+            first_count
+        );
+        let after: Vec<_> = protected.iter().map(|t| table_digest(t)).collect();
+        assert_eq!(before, after);
+        for (path, bytes) in sources {
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+        println!("isolated recovery: new_matches={new_matches}, valid_matches={}, videos_verified={verified_videos}, partial_accounts={}, history_and_preferences_unchanged=true, source_copies_unchanged=true",expected.len(),summary.errors_seen);
+    }
+
+    #[test]
+    fn conflicts_are_isolated_without_source_order_winners_or_owner_changes() {
+        let conn = open_memory_for_test().unwrap();
+        migrate(&conn).unwrap();
+        let record = |id: &str, owner: &str, video: &str| MatchRecord {
+            matches_id: id.into(),
+            open_id: owner.into(),
+            videos: vec![crate::parser::model::VideoItem {
+                video_id: video.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let existing = record("existing", "456", "owned-video");
+        upsert_match(&conn, &existing, 1).unwrap();
+        upsert_videos(&conn, &existing, 1).unwrap();
+        let cases = vec![
+            record("good", "123", "good-video"),
+            record("duplicate", "123", "dup-a"),
+            record("duplicate", "123", "dup-b"),
+            record("conflict-a", "123", "shared"),
+            record("conflict-b", "123", "shared"),
+            record("existing", "123", "new-id"),
+            record("foreign", "456", "foreign-video"),
+            record("steals-video", "123", "owned-video"),
+            record("missing-video", "123", ""),
+        ];
+        for reversed in [false, true] {
+            let mut records = cases.clone();
+            if reversed {
+                records.reverse();
+            }
+            let report = validate_account_records(&conn, "123", &mut records).unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].matches_id, "good");
+            assert_eq!(report.skipped_records, 8);
+            assert_eq!(report.duplicate_match_ids, 2);
+            assert_eq!(
+                conn.query_row("SELECT openid FROM matches WHERE id='existing'", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+                "456"
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT match_id FROM videos WHERE id='owned-video'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "existing"
+            );
+        }
+    }
+
+    #[test]
     fn duplicate_video_conflicts_preserve_account_and_do_not_stop_other_accounts() {
         let dir = std::env::temp_dir().join(format!("wui-duplicate-video-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1204,7 +1529,7 @@ mod tests {
                 .unwrap()
                 .error_code
                 .as_deref(),
-            Some("index_conflict")
+            Some("partial_records")
         );
         assert_eq!(
             view.matches

@@ -37,7 +37,7 @@
       </div>
     </div>
     <div v-if="account.totalErrors > 0" class="library-error-banner" role="alert">
-      <span>有 {{ account.totalErrors }} 个账户或记录未能读取</span>
+      <span>{{ onlyPartialRecords ? '正常记录已更新，部分记录已跳过' : `有 ${account.totalErrors} 个账户或记录未能读取` }}</span>
       <button type="button" :disabled="account.scraping" @click="onRecoveryScan">全量扫描重试</button>
     </div>
     <div
@@ -186,6 +186,8 @@ const selectedAccountError = computed(() => {
   if (!openid || openid === '__all__') return null;
   return accountReadFeedback(account.accounts.find(item => item.openid === openid));
 });
+const onlyPartialRecords = computed(() => account.totalErrors > 0
+  && account.totalErrors === account.accounts.filter(a => a.error && a.errorCode === 'partial_records').length);
 
 // Spinner for the user-driven refresh path (the Refresh button calls
 // account.scrapeLibrary, which sets scraping=true). The first-launch
@@ -356,7 +358,8 @@ async function runScan(mode: ScanMode) {
   if (mode === 'full') ui.showScanOverlay();
   try {
     const result = await account.scrapeLibrary(mode);
-    const feedback = scanCompletionFeedback(mode, result.totalErrors);
+    const feedback = scanCompletionFeedback(mode, result.totalErrors,
+      result.accounts.filter(a => a.error && a.errorCode === 'partial_records').length);
     ui.showToast(feedback.message, feedback.tone);
   } catch (error) {
     clientLog('error', 'library-scan', error instanceof Error ? error.message : String(error));

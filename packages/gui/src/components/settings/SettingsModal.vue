@@ -408,7 +408,8 @@ async function onFullScan() {
   ui.showScanOverlay();
   try {
     const result = await account.scrapeLibrary('full');
-    const feedback = scanCompletionFeedback('full', result.totalErrors);
+    const feedback = scanCompletionFeedback('full', result.totalErrors,
+      result.accounts.filter(a => a.error && a.errorCode === 'partial_records').length);
     ui.showToast(feedback.message, feedback.tone);
     await settings.refreshLibraryStats();
   } catch (error) {
