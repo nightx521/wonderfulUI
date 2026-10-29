@@ -1,6 +1,6 @@
 {
   "$schema": "https://example.com/wonderful-ui/versions.schema.json",
-  "current": "1.0.2",
+  "current": "1.1.0-beta.1",
   "min_supported": "0.1.0",
   "releases": {
     "v0.1.0": {
@@ -346,6 +346,19 @@
       "date": "2026-10-29",
       "prerelease": false,
       "notes": "WonderfulUI 1.0.2\n\n- 修复部分记录缺少对局编号时，整个账号无法刷新、新对局不显示的问题。\n- 异常记录单独跳过，正常对局继续更新；保留原有资料、导入历史和账号设置。\n- 区分部分记录跳过与账号读取失败，显示跳过数量和简短原因。\n- 修复对局未填写账号标识时的归属与详情读取，继续保护冲突的对局和视频编号。",
+      "min_supported_version": "0.1.0",
+      "assets": {
+        "windows-x86_64": {
+          "url": "",
+          "signature": ""
+        }
+      }
+    },
+    "v1.1.0-beta.1": {
+      "tag": "v1.1.0-beta.1",
+      "date": "2026-10-29",
+      "prerelease": true,
+      "notes": "WonderfulUI 1.1.0-beta.1\n\n- 新增默认关闭的手机访问，在同一局域网通过浏览器扫码并由电脑确认连接。\n- 手机可独立浏览、筛选本机和已导入的回放，查看详情并播放原视频。\n- 支持视频按需读取、拖动进度，以及设备断开和关闭服务后会话失效。\n- 手机访问与快传独立运行，保留既有资料库和设置。",
       "min_supported_version": "0.1.0",
       "assets": {
         "windows-x86_64": {

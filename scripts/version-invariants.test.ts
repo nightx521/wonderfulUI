@@ -1,5 +1,18 @@
 import { describe, expect, test } from 'bun:test';
-import { releaseTagMismatch } from './version-invariants.ts';
+import { nextReleaseVersion, releaseTagMismatch } from './version-invariants.ts';
+
+describe('nextReleaseVersion', () => {
+  test('promotes a local preview without skipping the stable version', () => {
+    expect(nextReleaseVersion('1.1.0-beta.1', 'patch')).toBe('1.1.0');
+    expect(nextReleaseVersion('1.1.0-beta.1+local', 'patch')).toBe('1.1.0');
+  });
+  test('increments stable versions and rejects invalid input', () => {
+    expect(nextReleaseVersion('1.0.2', 'patch')).toBe('1.0.3');
+    expect(nextReleaseVersion('1.0.2', 'minor')).toBe('1.1.0');
+    expect(nextReleaseVersion('1.0.2', 'major')).toBe('2.0.0');
+    expect(() => nextReleaseVersion('invalid', 'patch')).toThrow();
+  });
+});
 
 describe('releaseTagMismatch', () => {
   test('accepts numbered preview tags only for a declared preview of the same version', () => {

@@ -1,6 +1,6 @@
 [package]
 name = "wonderful-ui"
-version = "1.0.2"
+version = "1.1.0-beta.1"
 authors = ["WizisCool", "murainy", "WonderfulUI Contributors"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/nightx521/wonderfulUI"
@@ -51,6 +51,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # Cross-platform operational interface enumeration for LAN share when the host
 # has no default IPv4 route. The primary route-selection probe still uses std.
 if-addrs = "0.15"
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "fs", "io-util", "macros"] }
+tokio-util = { version = "0.7", features = ["io"] }
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
 
 [target.'cfg(windows)'.dependencies]
 # 与 tauri 2.0.1 锁定的 windows 0.61 同主版本，直接用 ShellExecuteW 走原生

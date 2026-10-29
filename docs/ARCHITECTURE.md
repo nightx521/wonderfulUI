@@ -159,6 +159,35 @@ Windows NSIS 安装、覆盖安装和安装器 `/UPDATE` 会幂等配置名为
 不绕过企业组策略、第三方防火墙或路由器 AP 隔离；缺失或不正确时，首次使用可能请求一次
 受限 UAC 修复。
 
+## 手机访问
+
+`mobile_access.rs` 使用独立的 `22358/TCP` HTTP listener，绑定所选局域网 IPv4；
+不会复用或关闭快传 listener。默认无服务，Tauri 设置命令才可启动。手机端由
+`packages/mobile` 构建，与资料库、筛选及结果/段位/多杀展示的纯函数共用规则。
+静态页面及本地 Valorant 图片在构建时嵌入程序，无外部图片/脚本依赖。
+
+邀请通过 URL fragment 进入手机页面并立即从地址栏移除；邀请一次扫码后轮换，
+10 分钟过期。配对请求最多等待 2 分钟，只有桌面 IPC 可批准/拒绝；网络没有批准入口。
+批准后使用 HttpOnly、SameSite=Strict 的设备 cookie，绑定请求 IP，最多 4 个设备，
+12 小时到期。单设备撤销及整体关闭会失效会话并取消后续视频读取；手机心跳在断开时
+清空浏览视图和播放器。局域网 HTTP 不提供传输加密，只应在信任网络中开启。
+
+网络端只提供配对和只读 session/library/media/static 资源；不暴露 Tauri IPC、扫描、
+改名、导入、数据库写入、任意路径读、日志或源文件。`mobile_library.rs` 以只读 SQLite
+连接读取现有索引，显式投影显示字段；媒体 ID、账号/对局 ID 使用会话盐散列，
+不返回本机媒体路径、原始 openid、完整事件或未知 extras。媒体只从注册快照查找，
+要求非符号链接普通文件及受支持扩展名；兼容父目录的合法 Windows junction。
+
+视频支持 HEAD、单 Range、suffix/open-ended Range、206/416 和按需流式读取。
+HTTP 限制 Host/Origin、请求头读取时间与大小、配对正文和请求频率；不会记录 cookie、
+邀请或手机资料库响应。关闭会取消在途连接、等待线程结束并释放端口。
+Windows 安装/修复配置独立 `WonderfulUI Mobile Access` 规则，限定程序、22358/TCP
+及 LocalSubnet；不更改现有快传规则的端口与范围。两个服务生命周期独立。
+
+手机生产构建 `bun run build:mobile`，也由 GUI 完整构建调用；Rust release 构建缺少
+手机页面时拒绝打包。开发测试未生成页面时使用明确的开发占位。浏览器模拟测试不能
+代替安卓实体机的编解码、防火墙和真实 Wi-Fi 可达性验证。
+
 ## 安装与升级
 
 版本交付为 Windows x64 NSIS 安装器，沿用原目录覆盖升级并保留资料和设置。
@@ -185,10 +214,10 @@ packages/gui/src/
 │   ├── layout/             # top bar
 │   ├── match/              # 卡片、筛选、日期
 │   ├── player/             # 播放器、控制条、进度条
-│   ├── settings/           # 资料库概览、日志、关于
+│   ├── settings/           # 资料库概览、手机访问、日志、关于
 │   ├── share/              # 快传模态
 │   └── update/             # 更新模态
-├── stores/                 # account、detail、filter、player、settings、share、update、ui
+├── stores/                 # account、detail、filter、player、settings、mobile-access、share、update、ui
 ├── utils/                  # 纯逻辑、事件状态机、资源解析、平台适配
 └── views/                  # Home、Detail、Settings
 ```

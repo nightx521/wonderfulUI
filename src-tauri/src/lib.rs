@@ -3,6 +3,9 @@ mod firewall;
 mod frame_capture;
 mod lan_ip;
 mod library;
+mod mobile_access;
+mod mobile_library;
+mod mobile_policy;
 mod os_shell;
 mod parser;
 #[cfg(feature = "updater")]
@@ -44,6 +47,7 @@ pub fn run() {
         // 就会 panic "state() called before manage()"。
         .manage(share_server::ShareServerState::new())
         .manage(library::history::ImportState::default())
+        .manage(mobile_access::MobileAccessState::default())
         .invoke_handler(tauri::generate_handler![
             scan_shell,
             scan_all,
@@ -69,6 +73,12 @@ pub fn run() {
             start_share_server,
             stop_share_server,
             share_server_status,
+            mobile_access::start_mobile_access,
+            mobile_access::stop_mobile_access,
+            mobile_access::mobile_access_status,
+            mobile_access::decide_mobile_device,
+            mobile_access::revoke_mobile_device,
+            mobile_access::refresh_mobile_invite,
             share_port::inspect_share_port,
             share_port::release_share_port,
             log_event,

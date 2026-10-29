@@ -2,6 +2,7 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
+import { nextReleaseVersion } from './version-invariants';
 
 const ROOT = resolve(import.meta.dir, '..');
 const bumpType: 'patch' | 'minor' | 'major' = (process.argv[2] as any) ?? 'patch';
@@ -17,16 +18,7 @@ function writeJson(path: string, obj: any) {
 const tauriConfPath = join(ROOT, 'src-tauri', 'tauri.conf.json');
 const tauriConf = readJson(tauriConfPath);
 const current = tauriConf.version;
-const [major, minor, patch] = current.split('.').map(Number);
-
-let next: string;
-if (bumpType === 'major') {
-  next = `${major + 1}.0.0`;
-} else if (bumpType === 'minor') {
-  next = `${major}.${minor + 1}.0`;
-} else {
-  next = `${major}.${minor}.${patch + 1}`;
-}
+const next = nextReleaseVersion(current, bumpType);
 
 // 2. update tauri.conf.json
 tauriConf.version = next;
@@ -68,6 +60,13 @@ if (existsSync(guiPkgPath)) {
   console.log(`  packages/gui/package.json  ${current} -> ${next}`);
 }
 
+const mobilePkgPath = join(ROOT, 'packages', 'mobile', 'package.json');
+if (existsSync(mobilePkgPath)) {
+  const mobilePkg = readJson(mobilePkgPath);
+  mobilePkg.version = next;
+  writeJson(mobilePkgPath, mobilePkg);
+  console.log(`  packages/mobile/package.json  ${current} -> ${next}`);
+}
 // 7. update packages/parser/cli.ts VERSION constant
 const cliPath = join(ROOT, 'packages', 'parser', 'cli.ts');
 if (existsSync(cliPath)) {
@@ -124,13 +123,24 @@ const cliTestPath = join(ROOT, 'packages', 'parser', 'tests', 'cli.test.ts');
 if (existsSync(cliTestPath)) {
   let cliTestText = readFileSync(cliTestPath, 'utf8');
   cliTestText = cliTestText.replace(
-    /expect\(r\.stdout\.trim\(\)\)\.toBe\('[\d.]+'\);/,
+    /expect\(r\.stdout\.trim\(\)\)\.toBe\('[\dA-Za-z.+-]+'\);/,
     `expect(r.stdout.trim()).toBe('${next}');`,
   );
   writeFileSync(cliTestPath, cliTestText);
   console.log(`  packages/parser/tests/cli.test.ts  ${current} -> ${next}`);
 }
 
+// Keep frozen workspace installs and Cargo's package entry aligned as well.
+const bunLockPath = join(ROOT, 'bun.lock');
+if (existsSync(bunLockPath)) {
+  writeFileSync(bunLockPath, readFileSync(bunLockPath, 'utf8')
+    .replaceAll(`"version": "${current}"`, `"version": "${next}"`));
+}
+const cargoLockPath = join(ROOT, 'Cargo.lock');
+if (existsSync(cargoLockPath)) {
+  writeFileSync(cargoLockPath, readFileSync(cargoLockPath, 'utf8')
+    .replace(/(name = "wonderful-ui"\r?\nversion = ")[^"]+"/, `$1${next}"`));
+}
 // 10. git commit + tag
 execSync('git add -A', { cwd: ROOT, stdio: 'inherit' });
 execSync(`git commit -m "chore(release): v${next}"`, { cwd: ROOT, stdio: 'inherit' });

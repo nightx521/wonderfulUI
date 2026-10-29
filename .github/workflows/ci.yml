@@ -54,6 +54,7 @@ jobs:
       - run: bun run assets:check
       - run: bun run typecheck
       - run: bun run test:all
+      - run: bun run build:mobile
       - name: Cargo lib tests (debug)
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 

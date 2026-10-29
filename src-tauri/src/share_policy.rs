@@ -50,15 +50,29 @@ pub fn firewall_rule_matches(
     rule: Option<&FirewallRuleSnapshot>,
     expected_application_name: &str,
 ) -> bool {
+    firewall_rule_matches_for(
+        rule,
+        expected_application_name,
+        QUICK_SHARE_FIREWALL_RULE_NAME,
+        QUICK_SHARE_PORT_TEXT,
+    )
+}
+
+pub fn firewall_rule_matches_for(
+    rule: Option<&FirewallRuleSnapshot>,
+    expected_application_name: &str,
+    name: &str,
+    port: &str,
+) -> bool {
     let Some(rule) = rule else { return false };
-    rule.name == QUICK_SHARE_FIREWALL_RULE_NAME
+    rule.name == name
         && rule.group == QUICK_SHARE_FIREWALL_GROUP
         && rule.application_name == expected_application_name
         && rule.enabled
         && rule.inbound
         && rule.allow
         && rule.tcp
-        && rule.local_ports == QUICK_SHARE_PORT_TEXT
+        && rule.local_ports == port
         && (rule.profiles == FIREWALL_PROFILE_DOMAIN_PRIVATE_PUBLIC
             || rule.profiles == FIREWALL_PROFILE_ALL)
         && rule
@@ -180,6 +194,38 @@ mod tests {
             ),
             FirewallDecision::Ready
         );
+    }
+
+    #[test]
+    fn mobile_and_quick_share_rules_remain_separate_and_scoped() {
+        let quick = correct_rule();
+        let mobile = FirewallRuleSnapshot {
+            name: crate::mobile_policy::MOBILE_RULE.into(),
+            local_ports: "22358".into(),
+            ..quick.clone()
+        };
+        let matches_mobile = |r: &FirewallRuleSnapshot| {
+            firewall_rule_matches_for(
+                Some(r),
+                &quick.application_name,
+                crate::mobile_policy::MOBILE_RULE,
+                "22358",
+            )
+        };
+        assert!(matches_mobile(&mobile));
+        assert!(!matches_mobile(&quick));
+        assert!(!firewall_rule_matches(
+            Some(&mobile),
+            &quick.application_name
+        ));
+        assert!(!matches_mobile(&FirewallRuleSnapshot {
+            remote_addresses: "*".into(),
+            ..mobile.clone()
+        }));
+        assert!(!matches_mobile(&FirewallRuleSnapshot {
+            local_ports: "22357,22358".into(),
+            ..mobile
+        }));
     }
 
     #[test]

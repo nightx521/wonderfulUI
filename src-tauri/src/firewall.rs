@@ -9,6 +9,32 @@
 
 use crate::share_policy::FIREWALL_HELPER_ARGUMENT;
 
+#[derive(Clone, Copy)]
+enum AccessKind {
+    QuickShare,
+    Mobile,
+}
+impl AccessKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::QuickShare => crate::share_policy::QUICK_SHARE_FIREWALL_RULE_NAME,
+            Self::Mobile => crate::mobile_policy::MOBILE_RULE,
+        }
+    }
+    fn port(self) -> &'static str {
+        match self {
+            Self::QuickShare => crate::share_policy::QUICK_SHARE_PORT_TEXT,
+            Self::Mobile => "22358",
+        }
+    }
+    fn helper(self) -> &'static str {
+        match self {
+            Self::QuickShare => FIREWALL_HELPER_ARGUMENT,
+            Self::Mobile => crate::mobile_policy::MOBILE_HELPER,
+        }
+    }
+}
+
 pub fn helper_args_are_exact(args: &[String]) -> bool {
     args.len() == 2 && args[1] == FIREWALL_HELPER_ARGUMENT
 }
@@ -16,13 +42,24 @@ pub fn helper_args_are_exact(args: &[String]) -> bool {
 pub fn ensure_ready() -> Result<(), String> {
     #[cfg(windows)]
     {
-        return windows::ensure_ready();
+        return windows::ensure_ready(AccessKind::QuickShare);
     }
 
     #[cfg(not(windows))]
     {
         // macOS/Linux builds do not own a Windows firewall and must keep the
         // backend testable without side effects.
+        Ok(())
+    }
+}
+
+pub fn ensure_mobile_ready() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        return windows::ensure_ready(AccessKind::Mobile);
+    }
+    #[cfg(not(windows))]
+    {
         Ok(())
     }
 }
@@ -71,9 +108,8 @@ mod windows {
     use ::windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
     use crate::share_policy::{
-        firewall_rule_matches, ipc_error, FirewallRuleSnapshot, ShareErrorCode,
+        firewall_rule_matches_for, ipc_error, FirewallRuleSnapshot, ShareErrorCode,
         QUICK_SHARE_FIREWALL_GROUP, QUICK_SHARE_FIREWALL_REMOTE_ADDRESSES,
-        QUICK_SHARE_FIREWALL_RULE_NAME, QUICK_SHARE_PORT_TEXT,
     };
 
     const HELPER_OK: i32 = 0;
@@ -107,7 +143,7 @@ mod windows {
         Failed(String),
     }
 
-    pub fn ensure_ready() -> Result<(), String> {
+    pub fn ensure_ready(kind: AccessKind) -> Result<(), String> {
         let lock = FIREWALL_MUTEX.get_or_init(|| Mutex::new(()));
         let _guard = lock
             .lock()
@@ -130,7 +166,7 @@ mod windows {
             ipc_error(ShareErrorCode::FirewallAuthorizationFailed)
         })?;
 
-        if rule_is_correct(&policy, &executable) {
+        if rule_is_correct(&policy, &executable, kind) {
             return Ok(());
         }
 
@@ -151,7 +187,7 @@ mod windows {
         }
 
         log_detail("Quick Share firewall rule is missing or incorrect; requesting one-time UAC");
-        let helper_exit = match launch_elevated_helper(&executable) {
+        let helper_exit = match launch_elevated_helper(&executable, kind) {
             Ok(code) => code,
             Err(HelperLaunchError::Cancelled) => {
                 return Err(ipc_error(ShareErrorCode::FirewallAuthorizationCancelled));
@@ -175,7 +211,7 @@ mod windows {
         }
 
         let repaired = firewall_policy()
-            .map(|policy| rule_is_correct(&policy, &executable))
+            .map(|policy| rule_is_correct(&policy, &executable, kind))
             .unwrap_or(false);
         if repaired {
             Ok(())
@@ -187,14 +223,21 @@ mod windows {
 
     pub fn run_helper_if_requested() -> Option<i32> {
         let args: Vec<_> = std::env::args_os().collect();
-        if args.len() != 2 || args[1] != OsStr::new(FIREWALL_HELPER_ARGUMENT) {
+        if args.len() != 2 {
             return None;
         }
+        let kind = if args[1] == OsStr::new(FIREWALL_HELPER_ARGUMENT) {
+            AccessKind::QuickShare
+        } else if args[1] == OsStr::new(crate::mobile_policy::MOBILE_HELPER) {
+            AccessKind::Mobile
+        } else {
+            return None;
+        };
 
         let result = (|| -> Result<(), String> {
             let executable = current_executable()?;
             let _com = ComApartment::initialize()?;
-            install_exact_rule(&executable)
+            install_exact_rule(&executable, kind)
         })();
 
         let code = match result {
@@ -225,7 +268,7 @@ mod windows {
         unsafe { CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER) }
     }
 
-    fn rule_is_correct(policy: &INetFwPolicy2, executable: &Path) -> bool {
+    fn rule_is_correct(policy: &INetFwPolicy2, executable: &Path, kind: AccessKind) -> bool {
         let rules = match unsafe { policy.Rules() } {
             Ok(value) => value,
             Err(error) => {
@@ -233,7 +276,7 @@ mod windows {
                 return false;
             }
         };
-        let name = BSTR::from(QUICK_SHARE_FIREWALL_RULE_NAME);
+        let name = BSTR::from(kind.name());
         let rule = match unsafe { rules.Item(&name) } {
             Ok(value) => value,
             Err(error) => {
@@ -241,10 +284,10 @@ mod windows {
                 return false;
             }
         };
-        rule_properties_match(&rule, executable)
+        rule_properties_match(&rule, executable, kind)
     }
 
-    fn rule_properties_match(rule: &INetFwRule, executable: &Path) -> bool {
+    fn rule_properties_match(rule: &INetFwRule, executable: &Path, kind: AccessKind) -> bool {
         let expected_executable = normalize_path(&executable.to_string_lossy());
 
         let values = (
@@ -277,7 +320,7 @@ mod windows {
             return false;
         };
 
-        firewall_rule_matches(
+        firewall_rule_matches_for(
             Some(&FirewallRuleSnapshot {
                 name: name.to_string(),
                 group: group.to_string(),
@@ -292,10 +335,12 @@ mod windows {
                 edge_traversal: is_true(edge_traversal),
             }),
             &expected_executable,
+            kind.name(),
+            kind.port(),
         )
     }
 
-    fn install_exact_rule(executable: &Path) -> Result<(), String> {
+    fn install_exact_rule(executable: &Path, kind: AccessKind) -> Result<(), String> {
         let policy = firewall_policy().map_err(|error| error.to_string())?;
         match unsafe { policy.LocalPolicyModifyState() }.map_err(|error| error.to_string())? {
             NET_FW_MODIFY_STATE_OK => {}
@@ -305,7 +350,7 @@ mod windows {
         }
 
         let rules = unsafe { policy.Rules() }.map_err(|error| error.to_string())?;
-        let name = BSTR::from(QUICK_SHARE_FIREWALL_RULE_NAME);
+        let name = BSTR::from(kind.name());
         // Removing by the stable name first makes repair converge even when a
         // previous release left a wrong path, port, protocol, or duplicate.
         let _ = unsafe { rules.Remove(&name) };
@@ -315,9 +360,9 @@ mod windows {
                 .map_err(|error| error.to_string())?
         };
         let group = BSTR::from(QUICK_SHARE_FIREWALL_GROUP);
-        let description = BSTR::from("Allow WonderfulUI Quick Share from the local subnet.");
+        let description = BSTR::from("Allow WonderfulUI media access from the local subnet.");
         let application = BSTR::from(executable.to_string_lossy().as_ref());
-        let local_ports = BSTR::from(QUICK_SHARE_PORT_TEXT);
+        let local_ports = BSTR::from(kind.port());
         let remote_addresses = BSTR::from(QUICK_SHARE_FIREWALL_REMOTE_ADDRESSES);
         let profiles =
             NET_FW_PROFILE2_DOMAIN.0 | NET_FW_PROFILE2_PRIVATE.0 | NET_FW_PROFILE2_PUBLIC.0;
@@ -351,10 +396,13 @@ mod windows {
         Ok(())
     }
 
-    fn launch_elevated_helper(executable: &Path) -> Result<i32, HelperLaunchError> {
+    fn launch_elevated_helper(
+        executable: &Path,
+        kind: AccessKind,
+    ) -> Result<i32, HelperLaunchError> {
         let file = to_wide(executable.as_os_str());
         let verb = to_wide(OsStr::new("runas"));
-        let parameters = to_wide(OsStr::new(FIREWALL_HELPER_ARGUMENT));
+        let parameters = to_wide(OsStr::new(kind.helper()));
         let mut info = SHELLEXECUTEINFOW {
             cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
             fMask: SEE_MASK_NOCLOSEPROCESS,

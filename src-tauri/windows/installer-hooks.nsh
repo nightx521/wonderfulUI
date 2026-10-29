@@ -14,6 +14,8 @@
   ; decoding it, so Chinese status output is readable in the Unicode log.
   nsExec::ExecToLog /OEM /MBCS '"$SYSDIR\netsh.exe" advfirewall firewall delete rule name="${WUI_FIREWALL_RULE_NAME}"'
   Pop $0
+  nsExec::ExecToLog /OEM /MBCS '"$SYSDIR\netsh.exe" advfirewall firewall delete rule name="WonderfulUI Mobile Access"'
+  Pop $0
 !macroend
 
 !macro WUI_INSTALL_FIREWALL_RULE
@@ -35,6 +37,12 @@
   ; The template invokes this after files are copied for normal installs and
   ; Tauri's passive /UPDATE path, before the updated app is relaunched.
   !insertmacro WUI_INSTALL_FIREWALL_RULE
+  DetailPrint "正在配置手机访问防火墙规则..."
+  nsExec::Exec '"${WUI_FIREWALL_PROGRAM}" --wui-mobile-firewall-helper'
+  Pop $0
+  ${If} $0 != 0
+    DetailPrint "手机访问规则暂未配置（返回代码：$0），可在应用中重试授权。"
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

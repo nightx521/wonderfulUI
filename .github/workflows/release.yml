@@ -60,6 +60,7 @@ jobs:
       - run: bun run assets:check
       - run: bun run typecheck
       - run: bun run test:all
+      - run: bun run build:mobile
 
       # Debug-profile unit tests only — never release-profile, so we do not
       # recompile what the parallel build job already compiles as release.

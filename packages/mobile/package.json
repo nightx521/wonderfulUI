@@ -1,0 +1,20 @@
+{
+  "name": "@wonderful-ui/mobile",
+  "version": "1.1.0-beta.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun ../../tools/build-valorant-assets.ts && vite build",
+    "dev": "vite --host 127.0.0.1"
+  },
+  "dependencies": {
+    "vue": "^3.5.0",
+    "@wonderful-ui/parser": "workspace:*",
+    "@tanstack/table-core": "8.21.3",
+    "fuse.js": "7.4.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.7",
+    "vite": "^5.4.0"
+  }
+}

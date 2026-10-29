@@ -56,6 +56,8 @@ check('packages/parser/package.json', parserPkg.version, expected);
 // gui package.json
 const guiPkg = readJson(join(ROOT, 'packages', 'gui', 'package.json'));
 check('packages/gui/package.json', guiPkg.version, expected);
+const mobilePkg = readJson(join(ROOT, 'packages', 'mobile', 'package.json'));
+check('packages/mobile/package.json', mobilePkg.version, expected);
 
 // parser cli.ts
 const cliText = readFileSync(join(ROOT, 'packages', 'parser', 'cli.ts'), 'utf8');
@@ -72,7 +74,7 @@ check('versions.json current', versionsJson.current, expected);
 
 // cli test hardcoded version
 const cliTest = readFileSync(join(ROOT, 'packages', 'parser', 'tests', 'cli.test.ts'), 'utf8');
-const testVer = cliTest.match(/expect\(r\.stdout\.trim\(\)\)\.toBe\('([\d.]+)'\)/)?.[1] ?? '';
+const testVer = cliTest.match(/expect\(r\.stdout\.trim\(\)\)\.toBe\('([\dA-Za-z.+-]+)'\)/)?.[1] ?? '';
 check('packages/parser/tests/cli.test.ts', testVer, expected);
 
 // Signed updater distribution for the owned project, using the default acceleration route.

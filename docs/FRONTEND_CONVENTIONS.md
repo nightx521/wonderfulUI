@@ -4,6 +4,14 @@ This document describes GUI implementation conventions. Follow `DESIGN.md` and `
 
 ## Rendering Model
 
+The mobile LAN browser lives in `packages/mobile`. It shares pure filter,
+metadata, rank/result and display helpers with the GUI, never the Tauri adapter
+or browser-debug library. It uses same-origin HTTP and an approved HttpOnly
+cookie; the desktop stays the authority for pairing and revocation. Mobile
+filters use a separate storage key. Use touch-sized controls, a native modal
+filter sheet, and native video controls with seeking. A mobile numeric filter
+keeps a text draft until Apply. Closing desktop settings must not stop access.
+
 TopBar searches library metadata. Account scope, categories and numeric/date ranges
 remain independent. Facets ignore text queries to keep temporary searches from
 pruning selections. Persisted filters are sanitized to the current supported keys.

@@ -4,6 +4,8 @@ src-tauri/target/
 src-tauri/binaries/
 node_modules/
 out/
+output/playwright/
+.playwright-cli/
 dist/
 release/
 packages/gui/dist/

@@ -34,6 +34,7 @@ bun run build
 - 不要提交真实 openid、玩家昵称、用户绝对路径、NAS 目录、本地视频、完整日志或快传
   令牌。
 - 更新访问用户选择的代理或 GitHub 线路；用户开启快传时会启动 `22357/TCP` 局域网服务。
+  手机访问使用独立的 `22358/TCP`，默认关闭，配对需要电脑确认。
   文档和界面不能把应用写成完全不联网。
 - 不要承诺尚未实现的删除、编辑、导出、备份、自定义数据目录、便携运行或云同步。
 - 如果只改文档或界面文案，不要顺手改业务逻辑、IPC、CSS、依赖或构建配置。
@@ -60,8 +61,11 @@ git diff --check
 改动 Rust 或 IPC 时还要运行：
 
 ```bash
+bun run build:mobile
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
+
+手机页面构建后嵌入 Rust 服务；修改手机界面后需重新构建页面和桌面程序。
 
 浏览器模式和 macOS 上的检查不能证明 Windows WebView2、NSIS 安装、防火墙/UAC 或
 真实 ACLOS 扫描可用。没有 Windows 环境时，在 PR 中把未验证项写清楚即可。

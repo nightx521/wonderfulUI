@@ -14,7 +14,7 @@
     },
     "packages/gui": {
       "name": "@wonderful-ui/gui",
-      "version": "1.0.2",
+      "version": "1.1.0-beta.1",
       "dependencies": {
         "@floating-ui/dom": "^1.6.0",
         "@iconify-json/ph": "1.2.2",
@@ -46,9 +46,23 @@
         "vitest": "4.1.9",
       },
     },
+    "packages/mobile": {
+      "name": "@wonderful-ui/mobile",
+      "version": "1.1.0-beta.1",
+      "dependencies": {
+        "@tanstack/table-core": "8.21.3",
+        "@wonderful-ui/parser": "workspace:*",
+        "fuse.js": "7.4.2",
+        "vue": "^3.5.0",
+      },
+      "devDependencies": {
+        "@vitejs/plugin-vue": "6.0.7",
+        "vite": "^5.4.0",
+      },
+    },
     "packages/parser": {
       "name": "@wonderful-ui/parser",
-      "version": "1.0.2",
+      "version": "1.1.0-beta.1",
       "bin": {
         "wonderful-parser": "./cli.ts",
       },
@@ -400,6 +414,8 @@
     "@vueuse/shared": ["@vueuse/shared@10.11.1", "", { "dependencies": { "vue-demi": ">=0.14.8" } }, "sha512-LHpC8711VFZlDaYUXEBbFBCQ7GS3dVU9mjOhhMhXP6txTV4EhYQg/KGnQuvt/sPAtoUKq7VVUnL6mVtFoL42sA=="],
 
     "@wonderful-ui/gui": ["@wonderful-ui/gui@workspace:packages/gui"],
+
+    "@wonderful-ui/mobile": ["@wonderful-ui/mobile@workspace:packages/mobile"],
 
     "@wonderful-ui/parser": ["@wonderful-ui/parser@workspace:packages/parser"],
 

@@ -10,6 +10,7 @@ x64，当前格式是 NSIS 安装程序，不是 MSI 或便携压缩包。
 - `src-tauri/Cargo.toml`；
 - 根目录 `package.json`；
 - `packages/parser/package.json` 和 `packages/gui/package.json`；
+- `packages/mobile/package.json`；
 - `packages/parser/cli.ts`；
 - `packages/gui/src/utils/version.ts`；
 - `versions.json`；

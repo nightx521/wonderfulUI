@@ -24,6 +24,10 @@
         <WIcon icon="ph:database" :size="16" />
         <span>资料库</span>
       </button>
+      <button class="settings-nav-item" :class="{ 'is-active': settings.activeTab === 'mobile' }"
+        type="button" :aria-current="settings.activeTab === 'mobile' ? 'page' : undefined" @click="settings.setTab('mobile')">
+        <WIcon icon="ph:device-mobile" :size="16" /><span>手机访问</span>
+      </button>
       <button
         class="settings-nav-item"
         :class="{ 'is-active': settings.activeTab === 'logs' }"
@@ -197,6 +201,8 @@
         </section>
       </template>
 
+      <MobileAccess v-else-if="settings.activeTab === 'mobile'" />
+
       <!-- Logs tab -->
       <template v-else-if="settings.activeTab === 'logs'">
         <section class="settings-log-panel">
@@ -302,6 +308,7 @@ import { computed, ref, watch, onMounted, nextTick } from 'vue';
 import WIcon from '../common/WIcon.vue';
 import AccountShareChart from './AccountShareChart.vue';
 import HistoryImport from './HistoryImport.vue';
+import MobileAccess from './MobileAccess.vue';
 import { useAccountStore } from '../../stores/account.ts';
 import { useFilterStore } from '../../stores/filter.ts';
 import { useSettingsStore } from '../../stores/settings.ts';

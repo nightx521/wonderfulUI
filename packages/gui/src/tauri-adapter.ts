@@ -34,6 +34,8 @@ export const isBrowserDebugRuntime =
   typeof window !== 'undefined' && (wantsDebugRuntime() || !hasTauriRuntime());
 
 const mockEventListeners = new Map<string, Set<Listener<unknown>>>();
+let mockMobileStatus = { running:false, generation:null as string|null, url:null as string|null,
+  qrSvg:null as string|null, pending:[] as {id:string;name:string;ip:string}[], devices:[] as {id:string;name:string;ip:string}[] };
 
 function emitMockEvent<T>(event: string, payload: T): void {
   const listeners = mockEventListeners.get(event);
@@ -445,6 +447,25 @@ async function mockInvoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
         startedAtUnix: Math.floor(Date.now() / 1000),
       }) as T;
     }
+    case 'mobile_access_status':
+      return deepClone(mockMobileStatus) as T;
+    case 'stop_mobile_access':
+      mockMobileStatus={running:false,generation:null,url:null,qrSvg:null,pending:[],devices:[]};
+      return deepClone(mockMobileStatus) as T;
+    case 'start_mobile_access':
+      mockMobileStatus={running:true,generation:'debug-mobile',url:'http://192.168.1.42:22358/#pair=browser-debug',qrSvg:'<svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 220 220"><rect width="220" height="220" fill="white"/><path d="M20 20h60v60H20Zm120 0h60v60h-60ZM20 140h60v60H20Zm90-30h20v20h-20Zm30 0h20v50h-20Zm40 30h20v60h-20Zm-70 40h50v20h-50Z" fill="black"/></svg>',pending:[{id:'debug-phone',name:'安卓手机',ip:'192.168.1.50'}],devices:[]};
+      return deepClone(mockMobileStatus) as T;
+    case 'decide_mobile_device': {
+      const device=mockMobileStatus.pending.find(d=>d.id===args?.id);
+      if(device&&args?.allow)mockMobileStatus.devices.push(device);
+      mockMobileStatus.pending=mockMobileStatus.pending.filter(d=>d.id!==args?.id);
+      return deepClone(mockMobileStatus) as T;
+    }
+    case 'revoke_mobile_device':
+      mockMobileStatus.devices=mockMobileStatus.devices.filter(d=>d.id!==args?.id);
+      return deepClone(mockMobileStatus) as T;
+    case 'refresh_mobile_invite':
+      return deepClone(mockMobileStatus) as T;
     case 'stop_share_server':
       return { stopped: true, activeDownloads: 0 } as T;
     case 'inspect_share_port':

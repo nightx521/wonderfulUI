@@ -63,7 +63,8 @@ describe('Windows Quick Share firewall installer contract', () => {
     expect(hooks).toContain('name="${WUI_FIREWALL_RULE_NAME}"');
     expect(hooks).toContain('!define WUI_FIREWALL_RULE_NAME "WonderfulUI Quick Share"');
     expect(hooks).toContain('!define WUI_FIREWALL_PROGRAM "$INSTDIR\\wonderful-ui.exe"');
-    expect(firewall).toContain('install_exact_rule(&executable)');
+    expect(firewall).toContain('install_exact_rule(&executable, kind)');
+    expect(hooks.match(/nsExec::Exec '"\$\{WUI_FIREWALL_PROGRAM\}" --wui-mobile-firewall-helper'/g)).toHaveLength(1);
     expect(app.indexOf('firewall::run_helper_if_requested()')).toBeLessThan(
       app.indexOf('tauri::Builder::default()'),
     );
