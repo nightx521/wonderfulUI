@@ -6,6 +6,7 @@ mod library;
 mod mobile_access;
 mod mobile_library;
 mod mobile_policy;
+mod mobile_trust;
 mod os_shell;
 mod parser;
 #[cfg(feature = "updater")]
@@ -79,6 +80,8 @@ pub fn run() {
             mobile_access::decide_mobile_device,
             mobile_access::revoke_mobile_device,
             mobile_access::refresh_mobile_invite,
+            mobile_access::set_mobile_remember,
+            acknowledge_record_warnings,
             share_port::inspect_share_port,
             share_port::release_share_port,
             log_event,
@@ -96,12 +99,24 @@ pub fn run() {
     // Screenshot save: native Save As + write user-chosen path.
     let app = app
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        .setup(|app| {
+            mobile_access::restore_on_start(app.handle().clone());
+            Ok(())
+        });
 
     app_log::write(app_log::LogLevel::Info, "app", "WonderfulUI starting");
 
     app.run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+async fn acknowledge_record_warnings(openid:String,expected:String)->Result<(),String>{
+    run_blocking(move||{
+        let conn=library::db::open_library().map_err(|_|"资料库暂时无法读取")?;
+        library::warning_ack::confirm(&conn,&openid,&expected)
+    }).await
 }
 
 #[tauri::command]
@@ -264,22 +279,23 @@ fn load_after_startup_scrape(
         library::scraper::ScrapeMode::Incremental,
         app,
     ) {
-        Ok(summary) => library::db::load_library_view(conn, dir)
+        Ok(_summary) => library::db::load_library_view(conn, dir)
             .map(|view| {
-                let only_partial = summary.errors_seen > 0
+                let visible_errors=view.accounts.iter().filter(|a|a.error.as_ref().is_some_and(|e|!e.is_empty())).count();
+                let only_partial = visible_errors > 0
                     && view
                         .accounts
                         .iter()
                         .filter(|a| a.error_code.as_deref() == Some("partial_records"))
                         .count()
-                        == summary.errors_seen;
-                let warning = (summary.errors_seen > 0).then(|| {
+                        == visible_errors;
+                let warning = (visible_errors > 0).then(|| {
                     if only_partial {
                         "正常记录已更新，部分记录已跳过，请查看账户提示或设置中的日志".into()
                     } else {
                         format!(
                             "{} 个账户读取失败，请查看账户提示或设置中的日志",
-                            summary.errors_seen
+                            visible_errors
                         )
                     }
                 });

@@ -42,6 +42,7 @@ for (const agent of VALORANT_AGENTS) {
   AGENT_BY_ID.set(agent.uuid.toLowerCase(), agent);
   AGENT_BY_NAME.set(normalizeAgentName(agent.en), agent);
   AGENT_BY_NAME.set(normalizeAgentName(agent.developerName), agent);
+  AGENT_BY_NAME.set(normalizeAgentName(agent.cn), agent);
 }
 
 for (const mode of VALORANT_GAME_MODES) {
@@ -100,7 +101,7 @@ export function lookupGameModeAsset(match: MatchRecord): GameModeAsset | undefin
 }
 
 function normalizeAgentName(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  return value.trim().toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 }
 
 function normalizeText(value: string): string {

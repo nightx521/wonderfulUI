@@ -16,6 +16,10 @@ function rootWith(...open: ModalLayer[]): ParentNode {
 }
 
 describe('modal keyboard ownership', () => {
+  test('device approval and warning confirmation own keys above existing dialogs',()=>{
+    expect(topModalLayer(rootWith('share','warning','mobile'))).toBe('mobile');
+    expect(topModalLayer(rootWith('share','warning'))).toBe('warning');
+  });
   test('matches the visual z-order instead of listener registration order', () => {
     const root = rootWith('event', 'player', 'settings', 'share');
     expect(topModalLayer(root)).toBe('share');

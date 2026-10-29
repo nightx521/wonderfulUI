@@ -21,7 +21,8 @@ describe('AccountSidebar rename lifecycle', () => {
     })] } });
     const row = wrapper.get('.account.is-warning');
     expect(row.classes()).not.toContain('is-error');
-    expect(row.get('.account-count').text()).toBe('12 !');
+    expect(row.get('.account-count').text()).toBe('12');
+    expect(row.get('button[aria-label="处理已跳过的异常记录"]').text()).toBe('!');
     expect(row.attributes('data-tip')).toContain('部分记录已跳过（3 条）');
     expect(row.attributes('data-tip')).toContain('正常记录已更新');
     wrapper.unmount();

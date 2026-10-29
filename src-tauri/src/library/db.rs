@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Result};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 7;
+pub const CURRENT_SCHEMA_VERSION: i64 = 8;
 const LIBRARY_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 static MIGRATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -107,7 +107,7 @@ fn schema_is_current(conn: &Connection) -> Result<bool> {
         return Ok(false);
     }
     let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('meta','sources','scrape_jobs','accounts','account_preferences','snapshot_achievements','matches','videos','events','assets','history_devices','history_accounts','history_matches','history_videos')", [], |row| row.get(0))?;
-    if tables != 14 {
+    if tables != 14 || !conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='ignored_record_warnings')",[],|r|r.get::<_,bool>(0))? {
         return Ok(false);
     }
     for column in [
@@ -211,6 +211,13 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             custom_name TEXT,
             sort_order INTEGER,
             updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ignored_record_warnings (
+            openid TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            confirmed_at INTEGER NOT NULL,
+            PRIMARY KEY(openid, fingerprint)
         );
 
         CREATE TABLE IF NOT EXISTS matches (
@@ -461,11 +468,15 @@ pub fn load_library_view(conn: &Connection, dir: impl Into<String>) -> Result<Li
     // Strip rounds once after deserialize (bulk list must stay rounds-free for IPC size).
     let corrupt_history = super::history::merge_view(conn, &mut accounts, &mut matches)?;
     strip_match_rounds(&mut matches);
-    let account_errors: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM accounts WHERE parse_error IS NOT NULL AND parse_error <> ''",
-        [],
-        |row| row.get(0),
-    )?;
+    for account in &mut accounts {
+        if account.error_code.as_deref()==Some("partial_records") {
+            if let Some(error)=&account.error {
+                account.error=super::warning_ack::visible_error(conn,&account.openid,error)?;
+                if account.error.is_none(){account.error_code=None;}
+            }
+        }
+    }
+    let account_errors = accounts.iter().filter(|a|a.error.as_ref().is_some_and(|e|!e.is_empty())).count() as i64;
 
     Ok(LibraryLoadResult {
         dir: dir.into(),

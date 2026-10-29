@@ -18,6 +18,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "packages/gui/**"
+      - "packages/mobile/**"
       - "bun.lock"
       - "package.json"
       - ".bun-version"

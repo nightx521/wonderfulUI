@@ -1,12 +1,14 @@
 import { defineStore } from "pinia";
 import { onScopeDispose, ref } from "vue";
 import { invoke, listen, type UnlistenFn } from "../tauri-adapter";
-import { useUiStore } from "./ui";
 
 export interface MobileDevice {
   id: string;
   name: string;
   ip: string;
+  connected?: boolean;
+  remembered?: boolean;
+  remainingSeconds?: number;
 }
 export interface MobileStatus {
   running: boolean;
@@ -15,6 +17,8 @@ export interface MobileStatus {
   qrSvg: string | null;
   pending: MobileDevice[];
   devices: MobileDevice[];
+  rememberDevices?: boolean;
+  restoreError?: string | null;
 }
 const empty = (): MobileStatus => ({
   running: false,
@@ -36,6 +40,8 @@ const safeErrors = new Set([
   "手机访问防火墙授权未完成，请允许系统授权后重试",
   "资料库暂时无法读取，请稍后重试",
   "资料库较大，暂时无法在手机中加载",
+  "已记住设备的设置无法读取，请检查本地设置",
+  "设备授权设置保存失败，请稍后重试",
 ]);
 export const useMobileAccessStore = defineStore("mobile-access", () => {
   const status = ref<MobileStatus>(empty()),
@@ -45,14 +51,11 @@ export const useMobileAccessStore = defineStore("mobile-access", () => {
     unlisten: UnlistenFn | null = null,
     listening: Promise<void> | null = null,
     disposed = false;
-  const ui = useUiStore();
   function observe() {
     if (unlisten || listening) return listening ?? Promise.resolve();
     const request = listen<{ pairRequest?: boolean }>(
       "wui://mobile_access_changed",
       (event) => {
-        if (event.payload.pairRequest)
-          ui.showToast("有设备请求连接，请在“设置 → 手机访问”中确认", "ok");
         void refresh();
       },
     )
@@ -116,6 +119,9 @@ export const useMobileAccessStore = defineStore("mobile-access", () => {
   async function rotate() {
     await action("refresh_mobile_invite");
   }
+  async function setRemember(remember: boolean) {
+    await action("set_mobile_remember", { remember });
+  }
   async function init() {
     await observe();
     await refresh();
@@ -136,5 +142,6 @@ export const useMobileAccessStore = defineStore("mobile-access", () => {
     decide,
     revoke,
     rotate,
+    setRemember,
   };
 });

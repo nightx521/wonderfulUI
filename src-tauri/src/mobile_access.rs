@@ -1,6 +1,7 @@
 //! Opt-in, paired, read-only LAN browsing. Separate listener/lifecycle from Quick Share.
 use crate::mobile_library::{self, MediaFile, MediaKind, Snapshot};
 use crate::mobile_policy::{self, DeviceInfo, Pairing};
+use crate::mobile_trust::{SharedTrust, TrustStore};
 use axum::{
     body::{Body, Bytes},
     extract::{DefaultBodyLimit, State},
@@ -124,6 +125,8 @@ struct Server {
 pub struct MobileAccessState {
     inner: Mutex<Option<Server>>,
     lifecycle: Mutex<()>,
+    trust: Mutex<Option<SharedTrust>>,
+    restore_error: Mutex<Option<String>>,
 }
 impl Drop for MobileAccessState {
     fn drop(&mut self) {
@@ -145,9 +148,23 @@ pub struct AccessStatus {
     qr_svg: Option<String>,
     pending: Vec<DeviceInfo>,
     devices: Vec<DeviceInfo>,
+    remember_devices: bool,
+    restore_error: Option<String>,
 }
 impl MobileAccessState {
-    fn status(&self) -> AccessStatus {
+    fn trust(&self) -> Result<SharedTrust, String> {
+        let mut cached = self.trust.lock().map_err(|_| "设备设置暂时不可用")?;
+        if let Some(trust) = cached.as_ref() {
+            return Ok(trust.clone());
+        }
+        let trust = Arc::new(Mutex::new(TrustStore::load(
+            crate::library::db::library_dir()?.join("mobile-access.json"),
+        )?));
+        *cached = Some(trust.clone());
+        Ok(trust)
+    }
+    fn status(&self) -> Result<AccessStatus, String> {
+        let trust = self.trust()?;
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if guard.as_ref().is_some_and(|s| s.worker.is_finished()) {
             if let Some(server) = guard.take() {
@@ -156,14 +173,32 @@ impl MobileAccessState {
             }
         }
         let Some(server) = guard.as_ref() else {
-            return AccessStatus {
+            let trust = trust.lock().unwrap_or_else(|e| e.into_inner());
+            return Ok(AccessStatus {
                 running: false,
                 generation: None,
                 url: None,
                 qr_svg: None,
                 pending: vec![],
-                devices: vec![],
-            };
+                devices: trust
+                    .devices()
+                    .iter()
+                    .map(|d| DeviceInfo {
+                        id: d.id.clone(),
+                        name: d.name.clone(),
+                        ip: String::new(),
+                        connected: false,
+                        remembered: true,
+                        remaining_seconds: None,
+                    })
+                    .collect(),
+                remember_devices: trust.remember(),
+                restore_error: self
+                    .restore_error
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+            });
         };
         let mut pairing = server
             .core
@@ -177,20 +212,40 @@ impl MobileAccessState {
             .render::<qrcode::render::svg::Color>()
             .min_dimensions(220, 220)
             .build();
-        AccessStatus {
+        let remember_devices = trust.lock().unwrap_or_else(|e| e.into_inner()).remember();
+        Ok(AccessStatus {
             running: true,
             generation: Some(server.generation.clone()),
             url: Some(url),
             qr_svg: Some(svg),
             pending,
             devices,
-        }
+            remember_devices,
+            restore_error: None,
+        })
     }
-    fn stop(&self) {
+    fn stop(&self) -> Result<(), String> {
         let _lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        self.trust()?
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_enabled(false)?;
         if let Some(server) = self.inner.lock().unwrap_or_else(|e| e.into_inner()).take() {
             server.core.close();
             let _ = server.worker.join();
+        }
+        *self.restore_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(())
+    }
+    fn replace_server(&self, server: Server) {
+        let previous = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(server);
+        if let Some(previous) = previous {
+            previous.core.close();
+            let _ = previous.worker.join();
         }
     }
     fn action(&self, generation: &str, id: &str, allow: Option<bool>) -> Result<(), String> {
@@ -201,9 +256,9 @@ impl MobileAccessState {
             .ok_or("手机访问会话已结束")?;
         let mut p = s.core.pairing.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(allow) = allow {
-            p.decide(id, allow).map_err(str::to_string)?
+            p.decide(id, allow)?
         } else {
-            p.revoke(id)
+            p.revoke(id)?
         };
         Ok(())
     }
@@ -211,52 +266,129 @@ impl MobileAccessState {
 
 #[tauri::command]
 pub async fn mobile_access_status(app: tauri::AppHandle) -> Result<AccessStatus, String> {
-    crate::run_blocking(move || Ok(app.state::<MobileAccessState>().status())).await
+    crate::run_blocking(move || app.state::<MobileAccessState>().status()).await
+}
+fn detected_ip() -> Result<Ipv4Addr, String> {
+    crate::lan_ip::detect_lan_ipv4()
+        .ok_or_else(|| "未检测到可用的局域网，请连接 Wi-Fi 或有线网络".to_string())?
+        .parse()
+        .map_err(|_| "局域网地址不可用".into())
+}
+fn prepare_server(
+    app: &tauri::AppHandle,
+    state: &MobileAccessState,
+    ip: Ipv4Addr,
+) -> Result<Server, String> {
+    let listener = TcpListener::bind((ip, mobile_policy::MOBILE_PORT))
+        .map_err(|_| "手机访问端口 22358 无法使用，可能被其它程序占用")?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|_| "手机访问服务无法开启")?;
+    crate::firewall::ensure_mobile_ready()
+        .map_err(|_| "手机访问防火墙授权未完成，请允许系统授权后重试")?;
+    let salt = mobile_policy::random_token();
+    let loader: Loader = Arc::new(move || mobile_library::load(&salt));
+    let callback = app.clone();
+    let core = Core::new(
+        ip,
+        mobile_policy::MOBILE_PORT,
+        loader,
+        Arc::new(move |pair_request| {
+            let _ = callback.emit(
+                "wui://mobile_access_changed",
+                json!({"pairRequest":pair_request}),
+            );
+        }),
+    )?;
+    core.pairing.lock().unwrap_or_else(|e| e.into_inner()).trust = state.trust()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .map_err(|_| "手机访问服务无法开启")?;
+    let worker_core = core.clone();
+    let worker = thread::spawn(move || runtime.block_on(serve(listener, worker_core)));
+    Ok(Server {
+        core,
+        worker,
+        generation: mobile_policy::random_token(),
+    })
 }
 #[tauri::command]
 pub async fn start_mobile_access(app: tauri::AppHandle) -> Result<AccessStatus, String> {
     crate::run_blocking(move || {
         let state = app.state::<MobileAccessState>();
         let _lifecycle = state.lifecycle.lock().map_err(|_| "手机访问暂时无法开启")?;
-        if state.status().running {
-            return Ok(state.status());
+        if state.status()?.running {
+            return state.status();
         }
-        let ip: Ipv4Addr = crate::lan_ip::detect_lan_ipv4()
-            .ok_or("未检测到可用的局域网，请连接 Wi-Fi 或有线网络")?
-            .parse()
-            .map_err(|_| "局域网地址不可用")?;
-        let listener = TcpListener::bind((ip, mobile_policy::MOBILE_PORT))
-            .map_err(|_| "手机访问端口 22358 无法使用，可能被其它程序占用")?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|_| "手机访问服务无法开启")?;
-        crate::firewall::ensure_mobile_ready()
-            .map_err(|_| "手机访问防火墙授权未完成，请允许系统授权后重试")?;
-        let salt = mobile_policy::random_token();
-        let loader: Loader = Arc::new(move || mobile_library::load(&salt));
-        let callback = app.clone();
-        let changed = Arc::new(move |pair_request| {
-            let _ = callback.emit(
-                "wui://mobile_access_changed",
-                json!({"pairRequest":pair_request}),
-            );
-        });
-        let core = Core::new(ip, mobile_policy::MOBILE_PORT, loader, changed)?;
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .map_err(|_| "手机访问服务无法开启")?;
-        let worker_core = core.clone();
-        let worker = thread::spawn(move || {
-            runtime.block_on(serve(listener, worker_core));
-        });
-        *state.inner.lock().map_err(|_| "手机访问暂时无法开启")? = Some(Server {
-            core,
-            worker,
-            generation: mobile_policy::random_token(),
-        });
-        Ok(state.status())
+        let server = prepare_server(&app, &state, detected_ip()?)?;
+        if let Err(e) = state
+            .trust()?
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_enabled(true)
+        {
+            server.core.close();
+            let _ = server.worker.join();
+            return Err(e);
+        }
+        *state.inner.lock().map_err(|_| "手机访问暂时无法开启")? = Some(server);
+        *state
+            .restore_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        state.status()
+    })
+    .await
+}
+
+/// Restore only a previously enabled service; failures remain visible in settings.
+pub fn restore_on_start(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let enabled = app
+            .state::<MobileAccessState>()
+            .trust()
+            .map(|t| t.lock().unwrap_or_else(|e| e.into_inner()).enabled());
+        let result = match enabled {
+            Ok(true) => start_mobile_access(app.clone()).await.map(|_| ()),
+            Ok(false) => Ok(()),
+            Err(e) => Err(e),
+        };
+        if let Err(error) = result {
+            *app.state::<MobileAccessState>()
+                .restore_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(error);
+        }
+        let _ = app.emit("wui://mobile_access_changed", json!({"pairRequest":false}));
+    });
+}
+
+#[tauri::command]
+pub async fn set_mobile_remember(
+    app: tauri::AppHandle,
+    remember: bool,
+) -> Result<AccessStatus, String> {
+    crate::run_blocking(move || {
+        let state = app.state::<MobileAccessState>();
+        {
+            let guard = state.inner.lock().map_err(|_| "手机访问暂时不可用")?;
+            if let Some(server) = guard.as_ref() {
+                server
+                    .core
+                    .pairing
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .configure_remember(remember)?;
+            } else {
+                let trust = state.trust()?;
+                let mut trust = trust.lock().unwrap_or_else(|e| e.into_inner());
+                let devices = trust.devices().to_vec();
+                trust.configure(remember, devices)?;
+            }
+        }
+        state.status()
     })
     .await
 }
@@ -264,8 +396,9 @@ pub async fn start_mobile_access(app: tauri::AppHandle) -> Result<AccessStatus, 
 pub async fn stop_mobile_access(app: tauri::AppHandle) -> Result<AccessStatus, String> {
     crate::run_blocking(move || {
         let s = app.state::<MobileAccessState>();
-        s.stop();
-        Ok(s.status())
+        s.stop()?;
+        *s.restore_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        s.status()
     })
     .await
 }
@@ -279,28 +412,56 @@ pub async fn decide_mobile_device(
     crate::run_blocking(move || {
         let s = app.state::<MobileAccessState>();
         s.action(&generation, &id, Some(allow))?;
-        Ok(s.status())
+        s.status()
     })
     .await
 }
 #[tauri::command]
 pub async fn revoke_mobile_device(
     app: tauri::AppHandle,
-    generation: String,
+    generation: Option<String>,
     id: String,
 ) -> Result<AccessStatus, String> {
     crate::run_blocking(move || {
         let s = app.state::<MobileAccessState>();
-        s.action(&generation, &id, None)?;
-        Ok(s.status())
+        if s.status()?.running {
+            s.action(
+                generation.as_deref().ok_or("手机访问会话已结束")?,
+                &id,
+                None,
+            )?;
+        } else {
+            s.trust()?
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .revoke(&id)?;
+        }
+        s.status()
     })
     .await
 }
 #[tauri::command]
 pub async fn refresh_mobile_invite(app: tauri::AppHandle) -> Result<AccessStatus, String> {
     crate::run_blocking(move || {
-        let s = app.state::<MobileAccessState>();
-        if let Some(server) = s.inner.lock().map_err(|_| "手机访问暂时不可用")?.as_ref() {
+        let state = app.state::<MobileAccessState>();
+        let _lifecycle = state.lifecycle.lock().map_err(|_| "手机访问暂时不可用")?;
+        let ip = detected_ip()?;
+        let changed = state
+            .inner
+            .lock()
+            .map_err(|_| "手机访问暂时不可用")?
+            .as_ref()
+            .is_some_and(|s| s.core.ip != ip);
+        if changed {
+            // Prepare the new listener first; a failure keeps the existing service intact.
+            let server = prepare_server(&app, &state, ip)?;
+            state.replace_server(server);
+        } else if let Some(server) = state
+            .inner
+            .lock()
+            .map_err(|_| "手机访问暂时不可用")?
+            .as_ref()
+        {
             server
                 .core
                 .pairing
@@ -308,7 +469,7 @@ pub async fn refresh_mobile_invite(app: tauri::AppHandle) -> Result<AccessStatus
                 .unwrap_or_else(|e| e.into_inner())
                 .rotate();
         }
-        Ok(s.status())
+        state.status()
     })
     .await
 }
@@ -487,8 +648,21 @@ async fn route(core: Arc<Core>, peer: SocketAddr, request: Request<Body>) -> Res
                 r.headers_mut().insert(
                     header::SET_COOKIE,
                     format!(
-                        "{}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200",
-                        mobile_policy::COOKIE
+                        "{}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
+                        mobile_policy::COOKIE,
+                        if core
+                            .pairing
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .trust
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remember()
+                        {
+                            31536000
+                        } else {
+                            43200
+                        }
                     )
                     .parse()
                     .unwrap(),
@@ -521,7 +695,29 @@ async fn route(core: Arc<Core>, peer: SocketAddr, request: Request<Body>) -> Res
             };
         }
         if path == "/api/session" && method == Method::GET {
-            return response(StatusCode::OK, "{\"connected\":true}", "application/json");
+            let mut reply = response(StatusCode::OK, "{\"connected\":true}", "application/json");
+            if core
+                .pairing
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .trust
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remember()
+            {
+                if let Some(token) = cookie_token(headers) {
+                    reply.headers_mut().insert(
+                        header::SET_COOKIE,
+                        format!(
+                            "{}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000",
+                            mobile_policy::COOKIE
+                        )
+                        .parse()
+                        .unwrap(),
+                    );
+                }
+            }
+            return reply;
         }
         if let Some(id) = path.strip_prefix("/media/") {
             if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {

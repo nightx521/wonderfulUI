@@ -59,6 +59,9 @@ describe('generated Valorant metadata', () => {
   });
 
   test('contains current agents and canonical map names', () => {
+    expect(lookupAgentAsset('Hush')?.cn).toBe('遐思');
+    expect(lookupAgentAsset('Paprika')?.cn).toBe('遐思');
+    expect(lookupAgentAsset('遐思')?.image).toBe(lookupAgentAsset('Hush')?.image);
     expect(lookupAgentAsset('Miks')?.cn).toBe('迷核');
     expect(lookupAgentAsset('Veto')?.cn).toBe('禁灭');
     expect(lookupMapAsset('/Game/Maps/Jam/Jam')?.cn).toBe('莲华古城');

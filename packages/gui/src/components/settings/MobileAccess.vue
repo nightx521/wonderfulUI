@@ -27,11 +27,33 @@
         @change="onToggle"
       />
     </div>
+    <div class="settings-row mobile-toggle-row mobile-remember-row">
+      <div>
+        <label for="mobile-remember-switch" class="mobile-toggle-label"
+          >记住已授权设备</label
+        >
+        <p class="settings-row-sub">
+          同一浏览器可免配对重连；关闭此项会清除已保存的授权。
+        </p>
+      </div>
+      <input
+        id="mobile-remember-switch"
+        type="checkbox"
+        role="switch"
+        :checked="!!mobile.status.rememberDevices"
+        :aria-checked="!!mobile.status.rememberDevices"
+        :disabled="mobile.busy"
+        @change="onRememberToggle"
+      />
+    </div>
     <p v-if="mobile.busy" class="settings-row-sub" role="status">
       正在处理，请稍候；首次开启可能需要 Windows 防火墙授权。
     </p>
     <p v-if="mobile.error || copyError" class="mobile-error" role="alert">
       {{ mobile.error || copyError }}
+    </p>
+    <p v-if="mobile.status.restoreError" class="mobile-error" role="alert">
+      手机访问未能自动恢复，请检查局域网后重新开启。
     </p>
     <template v-if="mobile.status.running">
       <div class="mobile-entry">
@@ -104,37 +126,45 @@
           </div>
         </div>
       </section>
-      <section class="mobile-devices" aria-labelledby="mobile-connected-title">
-        <h4 id="mobile-connected-title">
-          已连接设备 <span>{{ mobile.status.devices.length }} / 4</span>
-        </h4>
-        <p v-if="!mobile.status.devices.length" class="settings-row-sub">
-          尚未连接设备。
-        </p>
-        <div
-          v-for="device in mobile.status.devices"
-          :key="device.id"
-          class="mobile-device"
-        >
-          <div>
-            <strong>{{ device.name }}</strong
-            ><span>{{ device.ip }}</span>
-          </div>
-          <button
-            class="btn settings-action"
-            type="button"
-            :disabled="mobile.busy"
-            :aria-label="`断开${device.name}`"
-            @click="mobile.revoke(device.id)"
-          >
-            断开
-          </button>
-        </div>
-      </section>
     </template>
+    <section
+      v-if="mobile.status.running || mobile.status.devices.length"
+      class="mobile-devices"
+      aria-labelledby="mobile-connected-title"
+    >
+      <h4 id="mobile-connected-title">
+        已授权设备 <span>{{ mobile.status.devices.length }} / 4</span>
+      </h4>
+      <p v-if="!mobile.status.devices.length" class="settings-row-sub">
+        尚未连接设备。
+      </p>
+      <div
+        v-for="device in mobile.status.devices"
+        :key="device.id"
+        class="mobile-device"
+      >
+        <div>
+          <strong>{{ device.name }}</strong
+          ><span
+            >{{ device.connected === false ? "待重连" : device.ip
+            }}{{ device.remembered ? " · 已记住" : "" }}</span
+          >
+        </div>
+        <button
+          class="btn settings-action"
+          type="button"
+          :disabled="mobile.busy"
+          :aria-label="`${device.remembered ? '撤销授权' : '断开'}${device.name}`"
+          @click="mobile.revoke(device.id)"
+        >
+          {{ device.remembered ? "撤销授权" : "断开" }}
+        </button>
+      </div>
+    </section>
     <p class="mobile-note">
-      请在信任的局域网中使用。关闭设置窗口后，已开启的访问会继续运行；关闭开关或退出
-      WonderfulUI 后，手机连接失效。每次重新开启都需要重新配对。
+      请在信任的局域网中使用。开关状态会保留，重启后自动恢复；关闭设置窗口会继续提供访问。
+      关闭访问或退出应用会断开当前连接。开启记住设备后可免配对重连；电脑 IP
+      改变、更换浏览器或清除浏览器数据时可能需要重新配对。
     </p>
   </section>
 </template>
@@ -151,6 +181,12 @@ function onToggle(event: Event) {
   const enabled = input.checked;
   input.checked = mobile.status.running;
   void mobile.setEnabled(enabled);
+}
+function onRememberToggle(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const enabled = input.checked;
+  input.checked = !!mobile.status.rememberDevices;
+  void mobile.setRemember(enabled);
 }
 async function copyLink() {
   copyError.value = "";
@@ -216,6 +252,11 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: 24px;
+}
+.mobile-remember-row {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-soft);
 }
 .mobile-toggle-label {
   font-weight: var(--w-semibold);

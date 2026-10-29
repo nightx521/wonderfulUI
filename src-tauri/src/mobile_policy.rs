@@ -1,4 +1,5 @@
 //! In-memory pairing and revocation for the opt-in LAN library.
+use crate::mobile_trust::{token_hash, SharedTrust, TrustStore, TrustedDevice};
 use base64::Engine;
 use rand::RngCore;
 use serde::Serialize;
@@ -6,14 +7,14 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::{Duration, Instant};
 
 pub const MOBILE_PORT: u16 = 22358;
 pub const MOBILE_RULE: &str = "WonderfulUI Mobile Access";
 pub const MOBILE_HELPER: &str = "--wui-mobile-firewall-helper";
-const PAIR_TTL: Duration = Duration::from_secs(120);
+const PAIR_TTL: Duration = Duration::from_secs(60);
 const SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 pub const COOKIE: &str = "wui_mobile";
 const MAX_DEVICES: usize = 4;
@@ -30,6 +31,10 @@ pub struct DeviceInfo {
     pub id: String,
     pub name: String,
     pub ip: String,
+    pub connected: bool,
+    pub remembered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining_seconds: Option<u64>,
 }
 #[derive(Clone)]
 pub struct Grant {
@@ -56,6 +61,7 @@ pub struct Pairing {
     devices: HashMap<String, Device>,
     attempts: HashMap<IpAddr, (Instant, usize)>,
     pub enabled: bool,
+    pub trust: SharedTrust,
 }
 
 impl Default for Pairing {
@@ -67,6 +73,7 @@ impl Default for Pairing {
             devices: HashMap::new(),
             attempts: HashMap::new(),
             enabled: true,
+            trust: Arc::new(Mutex::new(TrustStore::default())),
         }
     }
 }
@@ -91,14 +98,50 @@ impl Pairing {
     }
     pub fn infos(&mut self) -> (Vec<DeviceInfo>, Vec<DeviceInfo>) {
         self.prune();
-        (
-            self.pending
-                .values()
-                .filter(|p| p.outcome.is_none())
-                .map(|p| p.info.clone())
-                .collect(),
-            self.devices.values().map(|d| d.info.clone()).collect(),
-        )
+        let trust = self.trust.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending: Vec<_> = self
+            .pending
+            .values()
+            .filter(|p| p.outcome.is_none())
+            .collect();
+        pending.sort_by_key(|p| p.until);
+        let pending = pending
+            .into_iter()
+            .map(|p| {
+                let mut info = p.info.clone();
+                info.remaining_seconds = Some(
+                    p.until
+                        .saturating_duration_since(Instant::now())
+                        .as_secs()
+                        .saturating_add(1)
+                        .min(60),
+                );
+                info
+            })
+            .collect();
+        let mut devices: Vec<_> = self
+            .devices
+            .values()
+            .map(|d| {
+                let mut info = d.info.clone();
+                info.remembered = trust.devices().iter().any(|t| t.id == info.id);
+                info
+            })
+            .collect();
+        for d in trust.devices() {
+            if !devices.iter().any(|a| a.id == d.id) {
+                devices.push(DeviceInfo {
+                    id: d.id.clone(),
+                    name: d.name.clone(),
+                    ip: String::new(),
+                    connected: false,
+                    remembered: true,
+                    remaining_seconds: None,
+                });
+            }
+        }
+        devices.sort_by(|a, b| a.id.cmp(&b.id));
+        (pending, devices)
     }
     pub fn begin(
         &mut self,
@@ -121,7 +164,7 @@ impl Pairing {
         if self.invite_until <= Instant::now() || invite.len() != 43 || invite != self.invite {
             return Err("二维码已失效，请在电脑上刷新二维码");
         }
-        if self.pending.len() >= 8 || self.devices.len() >= MAX_DEVICES {
+        if self.pending.len() >= 8 || self.infos().1.len() >= MAX_DEVICES {
             return Err("连接数量已达上限，请在电脑上断开闲置设备");
         }
         let id = random_token();
@@ -135,6 +178,9 @@ impl Pairing {
                 name
             },
             ip: ip.to_string(),
+            connected: false,
+            remembered: false,
+            remaining_seconds: None,
         };
         self.pending.insert(
             id.clone(),
@@ -149,31 +195,41 @@ impl Pairing {
         self.rotate();
         Ok((id, secret))
     }
-    pub fn decide(&mut self, id: &str, allow: bool) -> Result<(), &'static str> {
+    pub fn decide(&mut self, id: &str, allow: bool) -> Result<(), String> {
         self.prune();
         if !self.enabled {
-            return Err("手机访问已关闭");
+            return Err("手机访问已关闭".into());
         }
-        if allow && self.devices.len() >= MAX_DEVICES {
-            return Err("连接数量已达上限");
+        if allow && self.infos().1.len() >= MAX_DEVICES {
+            return Err("连接数量已达上限".into());
         }
         let pending = self.pending.get_mut(id).ok_or("连接请求已过期")?;
         if pending.outcome.is_some() {
-            return Err("连接请求已处理");
+            return Err("连接请求已处理".into());
         }
-        pending.outcome = Some(allow);
         if allow {
             let token = random_token();
+            self.trust
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .add(TrustedDevice {
+                    id: pending.info.id.clone(),
+                    name: pending.info.name.clone(),
+                    token_hash: token_hash(&token),
+                })?;
+            let mut info = pending.info.clone();
+            info.connected = true;
             self.devices.insert(
                 pending.info.id.clone(),
                 Device {
-                    info: pending.info.clone(),
+                    info,
                     token,
                     until: Instant::now() + SESSION_TTL,
                     active: Arc::new(AtomicBool::new(true)),
                 },
             );
         }
+        pending.outcome = Some(allow);
         Ok(())
     }
     pub fn poll(
@@ -208,7 +264,8 @@ impl Pairing {
         if !self.enabled || token.len() != 43 {
             return None;
         }
-        self.devices
+        if let Some(grant) = self
+            .devices
             .values()
             .find(|d| {
                 d.token == token && d.info.ip == ip.to_string() && d.active.load(Ordering::Acquire)
@@ -217,12 +274,65 @@ impl Pairing {
                 active: d.active.clone(),
                 until: d.until,
             })
+        {
+            return Some(grant);
+        }
+        // A remembered browser proves possession of its credential, not its IP/name.
+        let trusted = self
+            .trust
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .devices()
+            .iter()
+            .find(|d| d.token_hash == token_hash(token))
+            .cloned()?;
+        if let Some(previous) = self.devices.remove(&trusted.id) {
+            previous.active.store(false, Ordering::Release);
+        }
+        let active = Arc::new(AtomicBool::new(true));
+        let until = Instant::now() + SESSION_TTL;
+        self.devices.insert(
+            trusted.id.clone(),
+            Device {
+                info: DeviceInfo {
+                    id: trusted.id,
+                    name: trusted.name,
+                    ip: ip.to_string(),
+                    connected: true,
+                    remembered: true,
+                    remaining_seconds: None,
+                },
+                token: token.into(),
+                until,
+                active: active.clone(),
+            },
+        );
+        Some(Grant { active, until })
     }
-    pub fn revoke(&mut self, id: &str) {
+    pub fn revoke(&mut self, id: &str) -> Result<(), String> {
+        self.trust
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .revoke(id)?;
         if let Some(d) = self.devices.remove(id) {
             d.active.store(false, Ordering::Release);
         }
         self.pending.remove(id);
+        Ok(())
+    }
+    pub fn configure_remember(&mut self, remember: bool) -> Result<(), String> {
+        let mut trust = self.trust.lock().unwrap_or_else(|e| e.into_inner());
+        let mut devices = trust.devices().to_vec();
+        for d in self.devices.values() {
+            if !devices.iter().any(|t| t.id == d.info.id) {
+                devices.push(TrustedDevice {
+                    id: d.info.id.clone(),
+                    name: d.info.name.clone(),
+                    token_hash: token_hash(&d.token),
+                });
+            }
+        }
+        trust.configure(remember, devices)
     }
     pub fn close(&mut self) {
         self.enabled = false;
@@ -295,7 +405,7 @@ mod tests {
         let token = p.poll(&id, &secret, ip).unwrap().unwrap();
         assert!(p.authorize(&token, other).is_none());
         let active = p.authorize(&token, ip).unwrap();
-        p.revoke(&id);
+        p.revoke(&id).unwrap();
         assert!(!active.active.load(Ordering::Acquire));
         assert!(p.authorize(&token, ip).is_none());
         assert!(p.poll(&id, &secret, ip).is_err());
@@ -330,6 +440,49 @@ mod tests {
         p.devices.get_mut(&id).unwrap().until = Instant::now();
         assert!(p.authorize(&token, ip).is_none());
         assert!(!grant.active.load(Ordering::Acquire));
+    }
+    #[test]
+    fn remembered_browser_reconnects_after_restart_and_revoke_is_durable() {
+        let ip = "192.168.1.2".parse().unwrap();
+        let new_ip = "192.168.1.3".parse().unwrap();
+        let mut first = Pairing::default();
+        first.configure_remember(true).unwrap();
+        let trust = first.trust.clone();
+        let (id, secret) = first.begin(&first.invite.clone(), "Phone", ip).unwrap();
+        first.decide(&id, true).unwrap();
+        let token = first.poll(&id, &secret, ip).unwrap().unwrap();
+        let stream = first.authorize(&token, ip).unwrap();
+        first.close();
+        assert!(!stream.active.load(Ordering::Acquire));
+        let mut next = Pairing {
+            trust: trust.clone(),
+            ..Pairing::default()
+        };
+        assert_eq!(next.infos().1[0].connected, false);
+        assert!(next.authorize(&random_token(), ip).is_none());
+        assert!(next.authorize(&token, new_ip).is_some());
+        next.revoke(&id).unwrap();
+        next.close();
+        let mut restarted = Pairing {
+            trust,
+            ..Pairing::default()
+        };
+        assert!(restarted.authorize(&token, ip).is_none());
+    }
+    #[test]
+    fn sixty_second_deadline_cannot_be_extended_by_polling_or_desktop_approval() {
+        let ip = "192.168.1.2".parse().unwrap();
+        let mut p = Pairing::default();
+        let (id, secret) = p.begin(&p.invite.clone(), "Phone", ip).unwrap();
+        assert_eq!(p.infos().0[0].remaining_seconds, Some(60));
+        let deadline = p.pending[&id].until;
+        p.poll(&id, &secret, ip).unwrap();
+        assert_eq!(p.pending[&id].until, deadline);
+        p.pending.get_mut(&id).unwrap().until = Instant::now();
+        assert!(p.decide(&id, true).is_err());
+        assert!(p.poll(&id, &secret, ip).is_err());
+        assert!(p.infos().0.is_empty());
+        assert!(p.infos().1.is_empty());
     }
     #[test]
     fn range_supports_seek_suffix_empty_and_boundary_cases() {

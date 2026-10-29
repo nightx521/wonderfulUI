@@ -18,6 +18,7 @@
       <ToastHost />
       <SettingsView v-if="settings.isOpen" />
       <UpdateModal />
+      <MobilePairPrompt />
     </template>
   </div>
 </template>
@@ -34,6 +35,7 @@ import ToastHost from './components/common/ToastHost.vue';
 import DetailView from './views/DetailView.vue';
 import OnboardingView from './components/common/OnboardingView.vue';
 import UpdateModal from './components/update/UpdateModal.vue';
+import MobilePairPrompt from './components/settings/MobilePairPrompt.vue';
 import { useUpdateStore } from './stores/update.ts';
 import { installUpdateDebug } from './utils/update-debug.ts';
 import {

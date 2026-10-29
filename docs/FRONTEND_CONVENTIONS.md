@@ -11,6 +11,11 @@ cookie; the desktop stays the authority for pairing and revocation. Mobile
 filters use a separate storage key. Use touch-sized controls, a native modal
 filter sheet, and native video controls with seeking. A mobile numeric filter
 keeps a text draft until Apply. Closing desktop settings must not stop access.
+The switch restores its previous state at startup. Remembered browser grants are
+optional and revocable. Incoming requests use a centered approval dialog, dimmed
+backdrop and a 60-second countdown backed by a native deadline. Pending requests
+remain observable when settings are closed. A different PC address or cleared
+browser data can require pairing again.
 
 TopBar searches library metadata. Account scope, categories and numeric/date ranges
 remain independent. Facets ignore text queries to keep temporary searches from
@@ -54,6 +59,9 @@ highlight data, not a failure or evidence that recording was disabled.
 `partial_records` means valid matches were updated while individual records were
 quarantined. Keep that account name and match count visible; show a warning and
 the validated skipped count without marking the entire account as unreadable.
+Its warning button opens a popconfirm before acknowledging the exact displayed
+revision. Only the reviewed record fingerprints are silenced; source files stay
+read-only, and new warning fingerprints remain visible.
 
 - The app uses a stable DOM skeleton.
 - `App.vue` builds `.app`, `.topbar`, `.panes`, and the pane containers once after load. State management is driven by 8 Pinia stores (`account`, `filter`, `detail`, `player`, `settings`, `share`, `ui`, `update`) and vue-router (`createMemoryHistory`).
@@ -89,7 +97,8 @@ While update is downloading/installing, `Ctrl+W` is a no-op (do not dismiss inst
 
 ### Modal keyboard ownership
 
-- Visual z-order is the source of truth: share (1500) → update (1400) →
+- Visual z-order is the source of truth: device approval (1600) → warning
+  confirmation (1550) → share (1500) → update (1400) →
   settings (1300) → player (1200) → event list (1100).
 - Every document-level modal key handler must call
   `ownsTopModalLayer()` from `utils/modal-layer.ts` before acting. Component

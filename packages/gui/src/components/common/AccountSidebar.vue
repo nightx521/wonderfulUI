@@ -67,6 +67,8 @@
           <WIcon :icon="editingOpenid === a.openid ? 'ph:check' : 'ph:pencil-simple'" :size="12" />
         </button>
         <span class="account-count">{{ countText(a) }}</span>
+        <button v-if="a.error && a.errorCode === 'partial_records'" type="button" class="account-warning-btn"
+          aria-label="处理已跳过的异常记录" :data-tip="rowTip(a)" @click.stop="openWarning($event,a)">!</button>
       </div>
       </div>
     </div>
@@ -93,6 +95,7 @@
       </button>
     </div>
   </aside>
+  <RecordWarningConfirm v-if="warning" :key="warning.openid" v-bind="warning" @close="warning=null" />
 </template>
 
 <script setup lang="ts">
@@ -105,6 +108,7 @@ import {
   type ComponentPublicInstance,
 } from 'vue';
 import WIcon from './WIcon.vue';
+import RecordWarningConfirm from './RecordWarningConfirm.vue';
 import Sortable from 'sortablejs';
 import { useAccountStore, ALL_ACCOUNTS, type Account } from '../../stores/account.ts';
 import { useFilterStore } from '../../stores/filter.ts';
@@ -119,6 +123,11 @@ const filterStore = useFilterStore();
 const settings = useSettingsStore();
 const ui = useUiStore();
 const update = useUpdateStore();
+const warning=ref<{openid:string;expected:string;label:string;position:{x:number;y:number}}|null>(null);
+function openWarning(event:MouseEvent,a:Account){
+  const rect=(event.currentTarget as HTMLElement).getBoundingClientRect();
+  warning.value={openid:a.openid,expected:a.error!,label:accountLabel(a),position:{x:Math.max(16,Math.min(rect.right+8,window.innerWidth-326)),y:Math.max(16,Math.min(rect.top,window.innerHeight-270))}};
+}
 
 function onSettingsClick() {
   settings.setOpen(true);
@@ -175,7 +184,7 @@ function countText(a: Account): string {
   }
   if (a.error && a.errorCode !== 'partial_records') return '!';
   const count = hasActiveFilters.value ? `${filteredCount(a)} / ${a.matchCount}` : `${a.matchCount}`;
-  return a.error && a.errorCode === 'partial_records' ? `${count} !` : count;
+  return count;
 }
 
 function rowTip(a: Account): string {
@@ -333,6 +342,8 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.account-warning-btn { flex-shrink:0;min-width:22px;height:24px;padding:0 5px;color:var(--warn);font-weight:var(--w-semibold);border-radius:var(--radius-sm);cursor:pointer; }
+.account-warning-btn:hover { background:var(--surface-3); }
 .account-list {
   list-style: none; padding: 6px 0; margin: 0;
   overflow-y: auto; flex: 1;

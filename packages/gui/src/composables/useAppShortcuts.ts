@@ -53,6 +53,10 @@ export function useAppShortcuts(): void {
   }
 
   function closeTopLayer(): boolean {
+    const pairing=document.querySelector<HTMLButtonElement>('.mobile-pair-reject');
+    if(pairing){if(!pairing.disabled)pairing.click();return true;}
+    const warning=document.querySelector<HTMLElement>('.record-warning-backdrop');
+    if(warning){warning.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return true;}
     if (update.modalOpen && (update.status === "downloading" || update.status === "installing")) return true;
     const layer = nextCloseableLayer({
       updateCloseable: update.modalOpen && (update.status === "available" || update.status === "error"),
@@ -105,6 +109,9 @@ export function useAppShortcuts(): void {
   function onKeydown(e: KeyboardEvent): void {
     const action = matchAppShortcut(e);
     if (!action) return;
+    if(document.querySelector('.mobile-pair-backdrop') && action!=='quit-window' && action!=='close-layer-or-window'){
+      e.preventDefault();e.stopPropagation();return;
+    }
 
     // Never steal F12 / browser-only combos; matchAppShortcut already ignores them.
     e.preventDefault();

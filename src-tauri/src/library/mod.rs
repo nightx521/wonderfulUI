@@ -4,6 +4,7 @@ pub mod events;
 pub mod history;
 pub mod model;
 pub mod scraper;
+pub mod warning_ack;
 pub mod stats;
 
 use sha2::{Digest, Sha256};

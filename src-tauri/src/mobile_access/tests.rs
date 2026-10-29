@@ -10,6 +10,12 @@ struct Fixture {
 }
 impl Fixture {
     fn start(port: u16) -> Self {
+        Self::start_with(port, None)
+    }
+    fn start_with(port: u16, trust: Option<crate::mobile_trust::SharedTrust>) -> Self {
+        Self::start_at(Ipv4Addr::LOCALHOST, port, trust)
+    }
+    fn start_at(ip: Ipv4Addr, port: u16, trust: Option<crate::mobile_trust::SharedTrust>) -> Self {
         let root = std::env::temp_dir().join(format!("wui-mobile-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let path = root.join("fixture.mp4");
@@ -19,13 +25,13 @@ impl Fixture {
         )
         .unwrap();
         let value = json!({"dir":"private-path","accounts":[{"openid":"123","path":"private-path","nick":"Fixture","matchCount":1}],"matches":[{"matches_id":"fixture-match","openID":"123","map":{"map_id":"/Game/Maps/Ascent/Ascent"},"agent":{"agent_name":"Jett"},"gameStartTime":"2026-06-20 12:00:00","matches_time":1781956800000i64,"stats":{"kills":12,"deaths":5,"assists":3,"has_won":true,"rounds_won":13,"rounds_lost":5},"videos":[{"video_id":"fixture-video","video_src":path,"video_type":"击杀集锦"}]}],"totalErrors":0});
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let listener = TcpListener::bind((ip, port)).unwrap();
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
         let view = Arc::new(Mutex::new(value));
         let loader_view = view.clone();
         let core = Core::new(
-            Ipv4Addr::LOCALHOST,
+            ip,
             port,
             Arc::new(move || {
                 mobile_library::project(
@@ -36,6 +42,9 @@ impl Fixture {
             Arc::new(|_| {}),
         )
         .unwrap();
+        if let Some(trust) = trust {
+            core.pairing.lock().unwrap().trust = trust;
+        }
         let run = core.clone();
         let worker = thread::spawn(move || {
             tokio::runtime::Builder::new_multi_thread()
@@ -188,7 +197,7 @@ fn browser_fixture_for_mobile_qa() {
                     }
                     Some("revokeAll") => {
                         for d in &devices {
-                            f.core.pairing.lock().unwrap().revoke(&d.id);
+                            f.core.pairing.lock().unwrap().revoke(&d.id).unwrap();
                         }
                     }
                     Some("rotate") => f.core.pairing.lock().unwrap().rotate(),
@@ -304,7 +313,7 @@ fn actual_http_requires_approval_authorizes_only_registered_media_and_handles_se
         .status(),
         403
     );
-    f.core.pairing.lock().unwrap().revoke(&id);
+    f.core.pairing.lock().unwrap().revoke(&id).unwrap();
     assert_eq!(
         f.request("GET", video, Some(&cookie), None, None).status(),
         401
@@ -337,6 +346,85 @@ fn stopping_and_restarting_releases_listener_and_invalidates_existing_cookies() 
         );
         drop(next);
     }
+}
+
+#[test]
+fn remembered_cookie_works_after_disk_reload_and_revocation_stays_revoked() {
+    use crate::mobile_trust::TrustStore;
+    let root = std::env::temp_dir().join(format!("wui-trust-http-{}", uuid::Uuid::new_v4()));
+    let path = root.join("mobile-access.json");
+    let mut store = TrustStore::load(path.clone()).unwrap();
+    store.configure(true, vec![]).unwrap();
+    store.set_enabled(true).unwrap();
+    let first = Fixture::start_with(0, Some(Arc::new(Mutex::new(store))));
+    let port = first.port;
+    let (id, cookie) = first.paired();
+    let response = first.request("GET", "/api/session", Some(&cookie), None, None);
+    assert!(response
+        .header("set-cookie")
+        .unwrap()
+        .contains("Max-Age=31536000"));
+    drop(first);
+    let next = Fixture::start_with(
+        port,
+        Some(Arc::new(Mutex::new(
+            TrustStore::load(path.clone()).unwrap(),
+        ))),
+    );
+    assert_eq!(
+        next.request("GET", "/api/library", Some(&cookie), None, None)
+            .status(),
+        200
+    );
+    assert!(next.core.pairing.lock().unwrap().infos().0.is_empty());
+    next.core.pairing.lock().unwrap().revoke(&id).unwrap();
+    drop(next);
+    let restarted = Fixture::start_with(
+        port,
+        Some(Arc::new(Mutex::new(
+            TrustStore::load(path.clone()).unwrap(),
+        ))),
+    );
+    assert_eq!(
+        restarted
+            .request("GET", "/api/library", Some(&cookie), None, None)
+            .status(),
+        401
+    );
+    drop(restarted);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn switching_address_updates_entry_and_closes_the_previous_listener() {
+    let state = MobileAccessState::default();
+    *state.trust.lock().unwrap() = Some(Arc::new(Mutex::new(
+        crate::mobile_trust::TrustStore::default(),
+    )));
+    let mut first = Fixture::start(0);
+    state.replace_server(Server {
+        core: first.core.clone(),
+        worker: first.worker.take().unwrap(),
+        generation: "first".into(),
+    });
+    let next_ip = Ipv4Addr::new(127, 0, 0, 2);
+    let mut next = Fixture::start_at(next_ip, first.port, None);
+    state.replace_server(Server {
+        core: next.core.clone(),
+        worker: next.worker.take().unwrap(),
+        generation: "next".into(),
+    });
+    let status = state.status().unwrap();
+    assert_eq!(status.generation.as_deref(), Some("next"));
+    assert!(status
+        .url
+        .unwrap()
+        .starts_with(&format!("http://{next_ip}:{}", next.port)));
+    assert!(first.core.stopped.load(Ordering::Acquire));
+    assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, first.port)).is_ok());
+    assert_eq!(next.request("GET", "/", None, None, None).status(), 200);
+    state.stop().unwrap();
+    assert!(TcpListener::bind((next_ip, next.port)).is_ok());
 }
 
 #[test]

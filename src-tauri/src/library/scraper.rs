@@ -448,6 +448,7 @@ struct RecordValidation {
     missing_match_ids: usize,
     duplicate_match_ids: usize,
     conflicting_records: usize,
+    records: Vec<serde_json::Value>,
 }
 
 fn validate_account_records(
@@ -478,14 +479,19 @@ fn validate_account_records(
     let mut report = RecordValidation::default();
     let mut accepted = Vec::new();
     for mut m in std::mem::take(matches) {
+        // Only rejected records need a warning fingerprint; accepted matches
+        // already have their own normal indexing/hash path.
+        let fingerprint=||sha256_hex(&serde_json::to_string(&m).expect("match model is serializable"));
         if m.matches_id.trim().is_empty() {
             report.missing_match_ids += 1;
             report.skipped_records += 1;
+            report.records.push(serde_json::json!({"fingerprint":fingerprint(),"reason":"missing_match_ids"}));
             continue;
         }
         if match_ids[&m.matches_id] > 1 {
             report.duplicate_match_ids += 1;
             report.skipped_records += 1;
+            report.records.push(serde_json::json!({"fingerprint":fingerprint(),"reason":"duplicate_match_ids"}));
             continue;
         }
         let previous_account: Option<String> = conn
@@ -513,6 +519,7 @@ fn validate_account_records(
         if conflict {
             report.conflicting_records += 1;
             report.skipped_records += 1;
+            report.records.push(serde_json::json!({"fingerprint":fingerprint(),"reason":"conflicting_records"}));
             continue;
         }
         // The numeric source filename is the account identity even when a
