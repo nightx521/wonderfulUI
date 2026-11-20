@@ -74,7 +74,7 @@ describe('account store request lifecycle', () => {
     expect(invokeMock).toHaveBeenCalledWith('aclos_status');
   });
 
-  test('keeps named empty and parse-error accounts while hiding anonymous empty shells', () => {
+  test('keeps custom names and read failures while hiding automatic empty accounts', () => {
     const account = useAccountStore();
     account.accounts = [
       { openid: 'broken', path: 'D:\\WonderfulDb\\broken', matchCount: 0, error: 'parse failed' },
@@ -85,7 +85,7 @@ describe('account store request lifecycle', () => {
       { openid: 'ready', path: 'D:\\WonderfulDb\\ready', matchCount: 3 },
     ];
 
-    expect(account.realAccounts.map(item => item.openid)).toEqual(['broken', 'named', 'custom', 'ready']);
+    expect(account.realAccounts.map(item => item.openid)).toEqual(['broken', 'custom', 'ready']);
   });
 
   test('coalesces overlapping scrape requests and clears loading once', async () => {

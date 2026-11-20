@@ -116,12 +116,12 @@ describe('AccountSidebar rename lifecycle', () => {
     wrapper.unmount();
   });
 
-  test('keeps a named empty account visible with zero highlights', () => {
+  test('keeps a custom-named empty account visible with zero highlights', () => {
     const wrapper = mount(AccountSidebar, {
       global: {
         plugins: [createTestingPinia({ createSpy: vi.fn, stubActions: false,
           initialState: { account: {
-            accounts: [{ openid: 'empty', path: '', matchCount: 0, nick: '示例账户' }],
+            accounts: [{ openid: 'empty', path: '', matchCount: 0, customName: '示例账户' }],
             matches: [], selectedAccountId: 'empty', accountLabels: new Map([['empty', '示例账户']]),
           } },
         })],
@@ -129,7 +129,7 @@ describe('AccountSidebar rename lifecycle', () => {
     });
     const row = wrapper.get('.account[role="option"]');
     expect(row.get('.account-count').text()).toBe('0');
-    expect(row.attributes('data-tip')).toContain('暂无本机高光');
+    expect(row.attributes('data-tip')).toContain('暂无高光');
     expect(row.classes()).not.toContain('is-error');
     wrapper.unmount();
   });
@@ -150,6 +150,7 @@ describe('AccountSidebar rename lifecycle', () => {
                   matchCount: 1,
                   nick: '测试玩家',
                   tag: '0001',
+                  formerNames: ['旧名#0002'],
                 }],
                 matches: [],
                 selectedAccountId: '__all__',
@@ -171,6 +172,10 @@ describe('AccountSidebar rename lifecycle', () => {
     });
 
     await wrapper.get('button[data-action="rename-account"]').trigger('click');
+    const accountRow = wrapper.get('[data-account-id="test-openid"][role="option"]');
+    expect(accountRow.attributes('data-tip')).toContain('曾用名：旧名#0002');
+    expect(accountRow.attributes('aria-description')).toBe('曾用名：旧名#0002');
+
     const input = wrapper.get('input[aria-label="账户显示名"]').element as HTMLInputElement;
 
     expect(document.activeElement).toBe(input);

@@ -354,6 +354,7 @@ fn prepare(database: &Path, videos: &Path, name: &str, conn: &Connection) -> Res
             nick: snapshot.nick,
             tag: snapshot.tag,
             custom_name: None,
+            former_names: snapshot.former_names,
             achievements: snapshot.achievements,
             match_details: snapshot.match_details,
             error: None,
@@ -572,9 +573,8 @@ pub fn merge_view(
             if let Some(current) = accounts.iter_mut().find(|c| c.openid == a.openid) {
                 if current.nick.is_none() {
                     current.nick = a.nick;
-                }
-                if current.tag.is_none() {
                     current.tag = a.tag;
+                    current.former_names = a.former_names;
                 }
                 for ach in a.achievements {
                     if !current

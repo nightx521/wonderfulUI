@@ -96,6 +96,7 @@ fn parse_json(json_text: &str, openid: &str) -> Result<WonderfulDbFile, ParseErr
 pub struct SnapshotData {
     pub nick: Option<String>,
     pub tag: Option<String>,
+    pub former_names: Vec<String>,
     pub achievements: Vec<SnapshotAchievement>,
     pub match_details: Vec<SnapshotMatchDetail>,
 }
@@ -139,9 +140,7 @@ pub fn parse_snapshot_db_checked(path: &Path, openid: &str) -> Result<SnapshotDa
         .ok_or_else(|| ParseError::NoMatchList(expected_key.clone()))?;
     // nick/tag: prefer the chronologically latest record that carries them
     // (matches_time), so a rename is reflected instead of first-wins stale data.
-    let mut nick: Option<String> = None;
-    let mut tag: Option<String> = None;
-    let mut nick_time: i64 = i64::MIN;
+    let mut identities = Vec::new();
     let mut achievements: Vec<SnapshotAchievement> = Vec::new();
     let mut match_details = std::collections::BTreeMap::<String, (i64, SnapshotMatchDetail)>::new();
 
@@ -164,14 +163,8 @@ pub fn parse_snapshot_db_checked(path: &Path, openid: &str) -> Result<SnapshotDa
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        if (cand_nick.is_some() || cand_tag.is_some()) && rec_time >= nick_time {
-            nick_time = rec_time;
-            if cand_nick.is_some() {
-                nick = cand_nick;
-            }
-            if cand_tag.is_some() {
-                tag = cand_tag;
-            }
+        if let Some(nick) = cand_nick {
+            identities.push((rec_time, nick, cand_tag));
         }
         let mid = rec.get("matches_id").and_then(|v| v.as_str()).unwrap_or("");
         if !mid.is_empty() {
@@ -235,9 +228,33 @@ pub fn parse_snapshot_db_checked(path: &Path, openid: &str) -> Result<SnapshotDa
         });
     }
 
+    // Prefer the latest dated pair. Undated names cannot establish name history.
+    identities.sort_by_key(|(time, _, _)| *time);
+    let mut identities = identities.into_iter().rev();
+    let current = identities.next();
+    let mut former_names = Vec::new();
+    if let Some((current_time, current_nick, current_tag)) = &current {
+        let mut seen = std::collections::HashSet::new();
+        for (time, nick, tag) in identities {
+            if time <= 0 || time >= *current_time || (&nick == current_nick && &tag == current_tag) {
+                continue;
+            }
+            // A missing tag in an older record for the current nickname does
+            // not establish an earlier identity.
+            if &nick == current_nick && (tag.is_none() || current_tag.is_none()) {
+                continue;
+            }
+            let label = tag.map_or_else(|| nick.clone(), |tag| format!("{nick}#{tag}"));
+            if seen.insert(label.clone()) {
+                former_names.push(label);
+            }
+        }
+    }
+    let (nick, tag) = current.map_or((None, None), |(_, nick, tag)| (Some(nick), tag));
     Ok(SnapshotData {
         nick,
         tag,
+        former_names,
         achievements,
         match_details: match_details
             .into_values()
@@ -269,6 +286,32 @@ mod tests {
     use super::*;
     use crate::parser::model::VideoItem;
     use std::path::PathBuf;
+
+    #[test]
+    fn snapshot_name_history_keeps_pairs_and_requires_older_observations() {
+        let path = std::env::temp_dir().join(format!("wui-snapshot-names-{}", uuid::Uuid::new_v4()));
+        let raw = r#"{"key_snapshot_list123":[
+            {"matches_time":200,"snapshot":{"ss_nick":"Current","ss_nick_id":"33333"}},
+            {"matches_time":100,"snapshot":{"ss_nick":"Previous","ss_nick_id":"11111"}},
+            {"matches_time":150,"snapshot":{"ss_nick":"Previous","ss_nick_id":"11111"}},
+            {"matches_time":160,"snapshot":{"ss_nick":"Current"}},
+            {"snapshot":{"ss_nick":"Undated","ss_nick_id":"22222"}}
+        ]}"#;
+        let (key, iv) = derive_key_iv("123");
+        use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+        let mut bytes = vec![0; raw.len() + 16];
+        bytes[..raw.len()].copy_from_slice(raw.as_bytes());
+        let encrypted = cbc::Encryptor::<aes::Aes256>::new_from_slices(&key, &iv)
+            .unwrap()
+            .encrypt_padded_mut::<Pkcs7>(&mut bytes, raw.len())
+            .unwrap();
+        std::fs::write(&path, hex::encode(encrypted)).unwrap();
+        let parsed = parse_snapshot_db_checked(&path, "123").unwrap();
+        assert_eq!(parsed.nick.as_deref(), Some("Current"));
+        assert_eq!(parsed.tag.as_deref(), Some("33333"));
+        assert_eq!(parsed.former_names, ["Previous#11111"]);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn only_valid_empty_objects_and_lists_are_empty_highlight_data() {

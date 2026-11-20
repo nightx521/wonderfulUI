@@ -385,6 +385,8 @@ pub struct Account {
     /// data and can be cleared to fall back to `nick` / `tag`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub former_names: Vec<String>,
     /// Per-match MVP/SVP achievements from the snapshot file. Empty when the
     /// snapshot file is missing / empty / has no `match`-type records.
     #[serde(
@@ -441,8 +443,19 @@ pub struct LoadResult {
     pub dir: String,
     pub accounts: Vec<Account>,
     pub matches: Vec<MatchRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scan_notices: Vec<ScanNotice>,
     pub total_errors: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanNotice {
+    pub openid: String,
+    pub label: String,
+    pub missing_match_ids: usize,
+}
+
 
 /// Internal: full parse output for a single file (raw + matches).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

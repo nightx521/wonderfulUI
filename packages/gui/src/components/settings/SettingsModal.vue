@@ -59,6 +59,13 @@
       <!-- Library tab -->
       <template v-if="settings.activeTab === 'library'">
         <HistoryImport />
+        <details v-if="account.scanNotices.length" class="settings-section scan-details">
+          <summary>扫描详情 · {{ missingMatchCount }} 条缺少对局信息</summary>
+          <div v-for="notice in account.scanNotices" :key="notice.openid" class="settings-row">
+            <span>{{ account.accountLabels.get(notice.openid) ?? notice.label }}</span>
+            <span class="settings-row-sub">{{ notice.missingMatchIds }} 条有视频的记录缺少对局编号</span>
+          </div>
+        </details>
         <!-- Video Overview -->
         <section class="settings-section">
           <div class="settings-section-head">
@@ -323,6 +330,9 @@ import { fmtBytes } from '../../utils/library-stats.ts';
 import type { LibraryStats } from '../../utils/library-stats.ts';
 
 const account = useAccountStore();
+const missingMatchCount = computed(() =>
+  account.scanNotices.reduce((count, notice) => count + notice.missingMatchIds, 0)
+);
 const filter = useFilterStore();
 const settings = useSettingsStore();
 const ui = useUiStore();
@@ -519,6 +529,13 @@ watch(() => settings.activeTab, (tab) => {
   display: flex; flex-direction: column;
   gap: 12px;
 }
+.scan-details > summary {
+  cursor: pointer;
+}
+.scan-details[open] > summary {
+  margin-bottom: 8px;
+}
+
 .settings-content--logs {
   overflow: hidden;
 }

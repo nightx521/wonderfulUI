@@ -1,17 +1,7 @@
 //! ACLOS account identity (nick / #tag) resolution.
 //!
-//! ## Sources (nick/tag), highest wins
-//! 1. **Chromium Local Storage LevelDB** under `%APPDATA%\ACLOS\Local Storage\leveldb`
-//!    - Key `ACLOS_USER_ROLES_INFO` → JSON array of current roles
-//!    - Keys `acloshighlight_user_<openid>` → per-account role JSON
-//!    Copied to an app-owned temporary directory before pure-Rust
-//!    `rusty-leveldb` opens it; the ACLOS source is never opened as a database.
-//! 2. **`snapshot<openid>`** (`ss_nick` / `ss_nick_id`) — still used for MVP/SVP
-//!    and as nick fallback when LevelDB has no row for that openid.
-//! 3. Best-effort text scan of ACLOS logs / IndexedDB files (masked openids).
-//!
-//! Production code never hard-codes maintainer openids or nicks.
-//! Read-only; never writes ACLOS / Riot / game paths.
+//! Structured Local Storage fallback for accounts without a named snapshot.
+//! The live database is only copied. LevelDB opens the temporary copy.
 
 use rusty_leveldb::{LdbIterator, Options, DB};
 use std::collections::HashMap;
@@ -32,27 +22,13 @@ struct ScoredIdentity {
     score: u32,
 }
 
-#[derive(Debug, Clone)]
-struct MaskedEntry {
-    prefix: String,
-    suffix: String,
-    nick: Option<String>,
-    tag: Option<String>,
-    score: u32,
-}
-
-/// In-memory openid → nick/tag index built once per scrape.
 #[derive(Debug, Default)]
 pub struct AclosIdentityIndex {
     exact: HashMap<String, ScoredIdentity>,
-    masks: Vec<MaskedEntry>,
 }
 
 const SCORE_LEVELDB_ROLES: u32 = 100;
 const SCORE_LEVELDB_HIGHLIGHT_USER: u32 = 90;
-const SCORE_LOG_CLEAN: u32 = 3;
-const SCORE_LOG_MASK: u32 = 2;
-const SCORE_LOG_LOOSE: u32 = 1;
 
 impl AclosIdentityIndex {
     pub fn load_default() -> Self {
@@ -71,72 +47,27 @@ impl AclosIdentityIndex {
             load_from_local_storage_leveldb(&ls, &mut idx);
         }
 
-        // 2) Secondary text harvest: logs + IndexedDB raw files (masked openids etc.).
-        let mut paths: Vec<PathBuf> = Vec::new();
-        collect_leveldb_files(
-            &aclos_root
-                .join("IndexedDB")
-                .join("app_aclos.val.qq.com_0.indexeddb.leveldb"),
-            &mut paths,
-        );
-        // Also re-scan Local Storage ldb as text? Unnecessary if LevelDB open worked;
-        // still useful if open failed and we only have file archaeology.
-        if idx.exact.is_empty() {
-            collect_leveldb_files(&ls, &mut paths);
-        }
-        collect_log_files(&aclos_root.join("logs"), &mut paths);
-
-        for path in paths {
-            if let Ok(bytes) = std::fs::read(&path) {
-                let slice = tail_utf8_slice(&bytes, 12 * 1024 * 1024);
-                let text = String::from_utf8_lossy(slice);
-                harvest_text(&text, &mut idx);
-            }
-        }
         idx
     }
 
     pub fn lookup(&self, openid: &str) -> IdentityHint {
-        if let Some(s) = self.exact.get(openid) {
-            return IdentityHint {
-                nick: s.nick.clone(),
-                tag: s.tag.clone(),
-            };
-        }
-        let mut best: Option<&MaskedEntry> = None;
-        for m in &self.masks {
-            if mask_matches(openid, &m.prefix, &m.suffix) {
-                match best {
-                    None => best = Some(m),
-                    Some(b) if m.score > b.score => best = Some(m),
-                    Some(b) if m.score == b.score && m.tag.is_some() && b.tag.is_none() => {
-                        best = Some(m);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        match best {
-            Some(m) => IdentityHint {
-                nick: m.nick.clone(),
-                tag: m.tag.clone(),
-            },
-            None => IdentityHint::default(),
-        }
+        self.exact.get(openid).map(|identity| IdentityHint {
+            nick: identity.nick.clone(),
+            tag: identity.tag.clone(),
+        }).unwrap_or_default()
     }
 
-    /// Prefer LevelDB/cache identity over snapshot for nick/tag when present.
-    /// Snapshot values fill only fields still missing after cache lookup.
     pub fn merge_with_snapshot(
         &self,
         openid: &str,
         snap_nick: Option<String>,
         snap_tag: Option<String>,
     ) -> (Option<String>, Option<String>) {
-        let fb = self.lookup(openid);
-        let nick = fb.nick.or(snap_nick);
-        let tag = fb.tag.or(snap_tag);
-        (nick, tag)
+        if snap_nick.is_some() {
+            return (snap_nick, snap_tag);
+        }
+        let cached = self.lookup(openid);
+        (cached.nick, cached.tag)
     }
 }
 
@@ -376,7 +307,7 @@ fn ingest_one_role_obj(
     let Some(openid) = openid else {
         return;
     };
-    if !is_full_openid(&openid) {
+    if !is_full_openid(&openid) || openid_hint.is_some_and(|hint| hint != openid) {
         return;
     }
     let nick = v
@@ -389,13 +320,11 @@ fn ingest_one_role_obj(
         .and_then(|x| x.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| is_plausible_tag(s));
-    if nick.is_none() && tag.is_none() {
+    if nick.is_none() {
         return;
     }
     record_exact(idx, &openid, nick, tag, score);
 }
-
-// ─── Text harvest (logs / raw files) ────────────────────────────────────────
 
 fn aclos_roaming_dir() -> Option<PathBuf> {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
@@ -410,170 +339,9 @@ fn aclos_roaming_dir() -> Option<PathBuf> {
     }
 }
 
-fn collect_leveldb_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for ent in rd.flatten() {
-        let name = ent.file_name();
-        let name = name.to_string_lossy();
-        if name.ends_with(".ldb") || name.ends_with(".log") {
-            out.push(ent.path());
-        }
-    }
-}
-
-fn collect_log_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for ent in rd.flatten() {
-        let name = ent.file_name();
-        let name = name.to_string_lossy();
-        if name.ends_with(".log") || name.ends_with(".old.log") {
-            out.push(ent.path());
-        }
-    }
-}
-
-fn tail_utf8_slice(bytes: &[u8], max_len: usize) -> &[u8] {
-    if bytes.len() <= max_len {
-        return bytes;
-    }
-    let mut start = bytes.len() - max_len;
-    while start < bytes.len() && (bytes[start] & 0b1100_0000) == 0b1000_0000 {
-        start += 1;
-    }
-    &bytes[start..]
-}
-
-/// Single left-to-right pass over `text`. Formerly three full scans for clean /
-/// loose / masked openid patterns; same record rules and window sizes preserved.
-fn harvest_text(text: &str, idx: &mut AclosIdentityIndex) {
-    let mut search_from = 0;
-    while let Some(rel) = text[search_from..].find("\"openid\"") {
-        let start = search_from + rel;
-        let window600 = str_window(text, start, 600);
-        let window400 = str_window(text, start, 400);
-        if let Some((oid, nick, tag)) = parse_openid_nick_tag(window600, true) {
-            record_exact(idx, &oid, Some(nick), tag, SCORE_LOG_CLEAN);
-        }
-        if let Some((oid, nick, tag)) = parse_openid_nick_optional_tag(window400) {
-            record_exact(idx, &oid, Some(nick), tag, SCORE_LOG_LOOSE);
-        }
-        if let Some((mask, nick, tag)) = parse_masked_openid_nick_tag(window600) {
-            record_mask(idx, &mask, Some(nick), tag, SCORE_LOG_MASK);
-        }
-        search_from = start + 8;
-    }
-}
-
-fn str_window(text: &str, start: usize, max_len: usize) -> &str {
-    if start >= text.len() {
-        return "";
-    }
-    let mut end = start.saturating_add(max_len).min(text.len());
-    while end > start && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[start..end]
-}
-
-fn parse_openid_nick_tag(
-    window: &str,
-    require_full_oid: bool,
-) -> Option<(String, String, Option<String>)> {
-    let oid = extract_json_string_after(window, "\"openid\"")?;
-    if require_full_oid && !is_full_openid(&oid) {
-        return None;
-    }
-    let nick = extract_json_string_after(window, "\"nick\"")?;
-    if !is_plausible_nick(&nick) {
-        return None;
-    }
-    let tag = extract_json_string_after(window, "\"nick_id\"").filter(|t| is_plausible_tag(t));
-    Some((oid, nick, tag))
-}
-
-fn parse_openid_nick_optional_tag(window: &str) -> Option<(String, String, Option<String>)> {
-    let oid = extract_json_string_after(window, "\"openid\"")?;
-    if !is_full_openid(&oid) {
-        return None;
-    }
-    let nick = extract_json_string_after(window, "\"nick\"")?;
-    if !is_plausible_nick(&nick) {
-        return None;
-    }
-    let tag = extract_json_string_after(window, "\"nick_id\"").filter(|t| is_plausible_tag(t));
-    Some((oid, nick, tag))
-}
-
-fn parse_masked_openid_nick_tag(window: &str) -> Option<(String, String, Option<String>)> {
-    let oid = extract_json_string_after(window, "\"openid\"")?;
-    if !is_masked_openid(&oid) {
-        return None;
-    }
-    let nick = extract_json_string_after(window, "\"nick\"")?;
-    if !is_plausible_nick(&nick) {
-        return None;
-    }
-    let tag = extract_json_string_after(window, "\"nick_id\"").filter(|t| is_plausible_tag(t));
-    Some((oid, nick, tag))
-}
-
-fn extract_json_string_after(window: &str, key: &str) -> Option<String> {
-    let idx = window.find(key)?;
-    let rest = &window[idx + key.len()..];
-    let colon = rest.find(':')?;
-    let mut chars = rest[colon + 1..].chars().peekable();
-    while matches!(chars.peek(), Some(c) if c.is_whitespace()) {
-        chars.next();
-    }
-    if chars.next() != Some('"') {
-        return None;
-    }
-    let mut out = String::new();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(n) = chars.next() {
-                out.push(n);
-            }
-            continue;
-        }
-        if c == '"' {
-            break;
-        }
-        out.push(c);
-        if out.len() > 64 {
-            return None;
-        }
-    }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
-}
-
 fn is_full_openid(s: &str) -> bool {
     let b = s.as_bytes();
     (15..=25).contains(&b.len()) && b.iter().all(|c| c.is_ascii_digit())
-}
-
-fn is_masked_openid(s: &str) -> bool {
-    if s.len() < 10 || s.len() > 30 || !s.contains('*') {
-        return false;
-    }
-    let prefix: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let suffix: String = s
-        .chars()
-        .rev()
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    prefix.len() >= 4 && suffix.len() >= 4 && (prefix.len() + suffix.len()) >= 8
 }
 
 fn is_plausible_nick(s: &str) -> bool {
@@ -592,29 +360,6 @@ fn is_plausible_tag(s: &str) -> bool {
     (3..=8).contains(&b.len()) && b.iter().all(|c| c.is_ascii_digit())
 }
 
-fn mask_matches(openid: &str, prefix: &str, suffix: &str) -> bool {
-    openid.len() > prefix.len() + suffix.len()
-        && openid.starts_with(prefix)
-        && openid.ends_with(suffix)
-}
-
-fn split_mask(mask: &str) -> Option<(String, String)> {
-    let prefix: String = mask.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let suffix: String = mask
-        .chars()
-        .rev()
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    if prefix.len() >= 4 && suffix.len() >= 4 {
-        Some((prefix, suffix))
-    } else {
-        None
-    }
-}
-
 fn record_exact(
     idx: &mut AclosIdentityIndex,
     openid: &str,
@@ -622,87 +367,12 @@ fn record_exact(
     tag: Option<String>,
     score: u32,
 ) {
-    let entry = idx
-        .exact
-        .entry(openid.to_string())
-        .or_insert(ScoredIdentity {
-            nick: None,
-            tag: None,
-            score: 0,
-        });
-    let better = score > entry.score
-        || (score == entry.score && tag.is_some() && entry.tag.is_none() && nick.is_some());
-    if better {
-        if nick.is_some() {
-            entry.nick = nick;
-        }
-        if tag.is_some() {
-            entry.tag = tag;
-        }
-        entry.score = score;
-    } else if score == entry.score {
-        if nick.is_some() && nick == entry.nick {
-            entry.score = entry.score.saturating_add(1);
-        }
-        if entry.tag.is_none() {
-            if let Some(t) = tag {
-                entry.tag = Some(t);
-            }
-        }
-        if entry.nick.is_none() {
-            if let Some(n) = nick {
-                entry.nick = Some(n);
-            }
-        }
-    }
-}
-
-fn record_mask(
-    idx: &mut AclosIdentityIndex,
-    mask: &str,
-    nick: Option<String>,
-    tag: Option<String>,
-    score: u32,
-) {
-    let Some((prefix, suffix)) = split_mask(mask) else {
-        return;
-    };
-    if let Some(existing) = idx
-        .masks
-        .iter_mut()
-        .find(|m| m.prefix == prefix && m.suffix == suffix)
-    {
-        if score > existing.score
-            || (score == existing.score && tag.is_some() && existing.tag.is_none())
-        {
-            if nick.is_some() {
-                existing.nick = nick;
-            }
-            if tag.is_some() {
-                existing.tag = tag;
-            }
-            existing.score = score;
-        } else {
-            existing.score = existing.score.saturating_add(1);
-            if existing.tag.is_none() {
-                if let Some(t) = tag {
-                    existing.tag = Some(t);
-                }
-            }
-            if existing.nick.is_none() {
-                if let Some(n) = nick {
-                    existing.nick = Some(n);
-                }
-            }
-        }
-    } else {
-        idx.masks.push(MaskedEntry {
-            prefix,
-            suffix,
-            nick,
-            tag,
-            score,
-        });
+    let replace = idx.exact.get(openid).is_none_or(|previous| {
+        score > previous.score
+            || (score == previous.score && previous.tag.is_none() && tag.is_some())
+    });
+    if replace {
+        idx.exact.insert(openid.to_owned(), ScoredIdentity { nick, tag, score });
     }
 }
 
@@ -712,16 +382,6 @@ mod tests {
 
     const OID_A: &str = "1000000000000000001";
     const OID_B: &str = "2000000000000000002";
-    const OID_UNRELATED: &str = "9999999999999999999";
-
-    #[test]
-    fn str_window_stops_before_a_split_utf8_character() {
-        let text = "ab捷风cd";
-        assert_eq!(str_window(text, 0, 4), "ab");
-        assert_eq!(str_window(text, 2, 3), "捷");
-        assert_eq!(str_window(text, 2, usize::MAX), "捷风cd");
-        assert_eq!(str_window(text, text.len(), 3), "");
-    }
 
     #[test]
     fn decode_chromium_ls_value_utf8_json() {
@@ -777,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn leveldb_identity_preferred_over_snapshot_in_merge() {
+    fn snapshot_identity_preferred_as_a_pair() {
         let mut idx = AclosIdentityIndex::default();
         record_exact(
             &mut idx,
@@ -788,8 +448,10 @@ mod tests {
         );
         let (nick, tag) =
             idx.merge_with_snapshot(OID_A, Some("FromSnapshot".into()), Some("22222".into()));
-        assert_eq!(nick.as_deref(), Some("FromLevelDb"));
-        assert_eq!(tag.as_deref(), Some("11111"));
+        assert_eq!(nick.as_deref(), Some("FromSnapshot"));
+        assert_eq!(tag.as_deref(), Some("22222"));
+        let (_, tag) = idx.merge_with_snapshot(OID_A, Some("NewName".into()), None);
+        assert_eq!(tag, None);
     }
 
     #[test]
@@ -846,26 +508,6 @@ mod tests {
             idx.merge_with_snapshot(OID_A, Some("SnapOnly".into()), Some("33333".into()));
         assert_eq!(nick.as_deref(), Some("SnapOnly"));
         assert_eq!(tag.as_deref(), Some("33333"));
-    }
-
-    #[test]
-    fn masked_openid_matches_full_account_id() {
-        let sample =
-            r#"RESPONSE：{"openid":"2000***********0002","nick":"AlphaPlayer","nick_id":"67890"}"#;
-        let mut idx = AclosIdentityIndex::default();
-        harvest_text(sample, &mut idx);
-        let h = idx.lookup(OID_B);
-        assert_eq!(h.nick.as_deref(), Some("AlphaPlayer"));
-        assert_eq!(h.tag.as_deref(), Some("67890"));
-        assert!(idx.lookup(OID_UNRELATED).nick.is_none());
-    }
-
-    #[test]
-    fn rejects_placeholder_nick_wo() {
-        let sample = format!(r#"{{"openid":"{OID_A}","nick":"我","nick_id":"12345"}}"#);
-        let mut idx = AclosIdentityIndex::default();
-        harvest_text(&sample, &mut idx);
-        assert!(idx.lookup(OID_A).nick.is_none());
     }
 
     /// Optional: when this machine has ACLOS Local Storage, LevelDB open must

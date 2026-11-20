@@ -12,6 +12,7 @@ export interface Account {
   matchCount: number;
   nick?: string;
   tag?: string;
+  formerNames?: string[];
   customName?: string;
   achievements?: { matchesId: string; achvType: string; typeStr: string }[];
   matchDetails?: SnapshotMatchDetail[];
@@ -24,6 +25,7 @@ export interface LoadResult {
   accounts: Account[];
   matches: MatchRecord[];
   totalErrors: number;
+  scanNotices?: { openid: string; label: string; missingMatchIds: number }[];
 }
 
 export interface AclosStatus {
@@ -36,7 +38,7 @@ export const ALL_ACCOUNTS = '__all__';
 
 export function isVisibleAccount(account: Account): boolean {
   return (account.matchCount ?? 0) > 0 || !!account.error?.trim()
-    || !!account.nick?.trim() || !!account.customName?.trim();
+    || !!account.customName?.trim();
 }
 
 export const useAccountStore = defineStore('account', () => {
@@ -45,6 +47,7 @@ export const useAccountStore = defineStore('account', () => {
   const matches = ref<MatchRecord[]>([]);
   const dir = ref('');
   const totalErrors = ref(0);
+  const scanNotices = ref<NonNullable<LoadResult["scanNotices"]>>([]);
   const scraping = ref(false);
   const libraryRevision = ref(0);
   const assetPathCache = ref(new Map<string, string>());
@@ -57,7 +60,6 @@ export const useAccountStore = defineStore('account', () => {
   // first-run / onboarding screen.
   const aclosStatus = ref<AclosStatus | null>(null);
 
-  // Named empty accounts explain their state; anonymous empty shells stay hidden.
   const realAccounts = computed(() =>
     accounts.value.filter(isVisibleAccount),
   );
@@ -113,6 +115,7 @@ export const useAccountStore = defineStore('account', () => {
         : (visible[0]?.openid ?? null);
     }
     dir.value = data.dir;
+    scanNotices.value = data.scanNotices ?? [];
     totalErrors.value = data.totalErrors;
     assignAccountLabels();
     libraryRevision.value += 1;
@@ -219,7 +222,7 @@ export const useAccountStore = defineStore('account', () => {
   }
 
   return {
-    accounts, selectedAccountId, matches, dir, totalErrors, scraping, libraryRevision,
+    accounts, selectedAccountId, matches, dir, totalErrors, scanNotices, scraping, libraryRevision,
     assetPathCache, loadedMatchIds, aclosStatus,
     realAccounts, accountsForRender, accountLabels, accountOrder,
     scanShell, loadLibrary, loadLibraryIfCurrent, scrapeLibrary, cacheAssets, probeAclos,

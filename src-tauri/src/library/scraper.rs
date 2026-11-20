@@ -125,17 +125,19 @@ fn read_snapshot_for_account(
 ) -> (
     Option<String>,
     Option<String>,
+    Option<Vec<String>>,
     Vec<SnapshotAchievement>,
     Vec<crate::parser::model::SnapshotMatchDetail>,
     bool,
     bool,
 ) {
     let snapshot_path = dir.join(format!("snapshot{}", openid));
-    let (snap_nick, snap_tag, achievements, match_details, valid, retry) =
+    let (snap_nick, snap_tag, former_names, achievements, match_details, valid, retry) =
         match parser::reader::parse_snapshot_db_checked(&snapshot_path, openid) {
             Ok(data) => (
                 data.nick,
                 data.tag,
+                data.former_names,
                 data.achievements,
                 data.match_details,
                 true,
@@ -153,14 +155,12 @@ fn read_snapshot_for_account(
                         ),
                     );
                 }
-                (None, None, Vec::new(), Vec::new(), false, retry)
+                (None, None, Vec::new(), Vec::new(), Vec::new(), false, retry)
             }
         };
-    // Nick/tag: prefer ACLOS Local Storage LevelDB role cache
-    // (`ACLOS_USER_ROLES_INFO` / `acloshighlight_user_<openid>`), then snapshot.
-    // Achievements stay snapshot-only.
+    let former_names = snap_nick.as_ref().map(|_| former_names);
     let (nick, tag) = identity.merge_with_snapshot(openid, snap_nick, snap_tag);
-    (nick, tag, achievements, match_details, valid, retry)
+    (nick, tag, former_names, achievements, match_details, valid, retry)
 }
 
 fn upsert_source(conn: &Connection, dir: &Path, now: i64) -> rusqlite::Result<()> {
@@ -242,13 +242,45 @@ fn refresh_account_identity(
 ) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE accounts SET
-           nick = CASE WHEN ?2 IS NOT NULL THEN ?2 ELSE nick END,
-           tag = CASE WHEN ?3 IS NOT NULL THEN ?3 ELSE tag END,
+           nick = ?2,
+           tag = ?3,
            last_seen_at = ?4
-         WHERE openid = ?1",
+         WHERE openid = ?1 AND former_names_json IS NULL",
         params![openid, nick, tag, now],
     )?;
     Ok(())
+}
+
+fn account_name_history_json(
+    conn: &Connection,
+    openid: &str,
+    nick: &str,
+    tag: Option<&str>,
+    snapshot_names: &[String],
+) -> rusqlite::Result<String> {
+    let label = |name: &str, tag: Option<&str>| {
+        tag.map_or_else(|| name.to_owned(), |tag| format!("{name}#{tag}"))
+    };
+    let current = label(nick, tag);
+    let previous = conn.query_row(
+        "SELECT nick, tag, former_names_json FROM accounts
+         WHERE openid = ?1 AND former_names_json IS NOT NULL",
+        [openid],
+        |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?,
+                  row.get::<_, String>(2)?)),
+    ).optional()?;
+    let mut names = snapshot_names.to_vec();
+    if let Some((previous_nick, previous_tag, history)) = previous {
+        if let Some(previous_nick) = previous_nick {
+            if previous_nick != nick || (tag.is_some() && previous_tag.is_some()) {
+                names.insert(0, label(&previous_nick, previous_tag.as_deref()));
+            }
+        }
+        names.extend(serde_json::from_str::<Vec<String>>(&history).unwrap_or_default());
+    }
+    let mut seen = HashSet::new();
+    names.retain(|name| name != &current && seen.insert(name.clone()));
+    Ok(serde_json::to_string(&names).expect("names are serializable"))
 }
 
 fn upsert_account(
@@ -259,6 +291,7 @@ fn upsert_account(
     snapshot_meta: Option<SourceFileMeta>,
     nick: Option<String>,
     tag: Option<String>,
+    former_names: Option<&[String]>,
     achievements: &[SnapshotAchievement],
     match_details: &[crate::parser::model::SnapshotMatchDetail],
     snapshot_valid: bool,
@@ -266,16 +299,24 @@ fn upsert_account(
     parse_error_code: Option<&str>,
     now: i64,
 ) -> rusqlite::Result<()> {
+    let former_names_json = former_names.zip(nick.as_deref())
+        .map(|(names, nick)| account_name_history_json(conn, openid, nick, tag.as_deref(), names))
+        .transpose()?;
     conn.execute(
         "INSERT INTO accounts(
             openid, nick, tag, parse_error, source_id, source_path,
             source_size_bytes, source_mtime_ms, snapshot_size_bytes, snapshot_mtime_ms,
-            last_seen_at, parse_error_code, match_details_json
+            last_seen_at, parse_error_code, match_details_json, former_names_json
          )
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?15)
          ON CONFLICT(openid) DO UPDATE SET
-           nick = COALESCE(excluded.nick, accounts.nick),
-           tag = COALESCE(excluded.tag, accounts.tag),
+           nick = CASE WHEN excluded.former_names_json IS NOT NULL
+                            OR (accounts.former_names_json IS NULL AND excluded.nick IS NOT NULL)
+                       THEN excluded.nick ELSE accounts.nick END,
+           tag = CASE WHEN excluded.former_names_json IS NOT NULL
+                           OR (accounts.former_names_json IS NULL AND excluded.nick IS NOT NULL)
+                      THEN excluded.tag ELSE accounts.tag END,
+           former_names_json = COALESCE(excluded.former_names_json, accounts.former_names_json),
            parse_error = excluded.parse_error,
            parse_error_code = excluded.parse_error_code,
            match_details_json = CASE WHEN ?14 THEN excluded.match_details_json ELSE accounts.match_details_json END,
@@ -301,6 +342,7 @@ fn upsert_account(
             parse_error_code,
             serde_json::to_string(match_details).unwrap_or_else(|_| "[]".into()),
             snapshot_valid,
+            former_names_json,
         ],
     )?;
     if !snapshot_valid {
@@ -445,6 +487,7 @@ fn file_mtime_ms(path: &str) -> Option<i64> {
 #[derive(Default, serde::Serialize)]
 struct RecordValidation {
     skipped_records: usize,
+    training_records: usize,
     missing_match_ids: usize,
     duplicate_match_ids: usize,
     conflicting_records: usize,
@@ -483,9 +526,19 @@ fn validate_account_records(
         // already have their own normal indexing/hash path.
         let fingerprint=||sha256_hex(&serde_json::to_string(&m).expect("match model is serializable"));
         if m.matches_id.trim().is_empty() {
-            report.missing_match_ids += 1;
+            let is_training = !m.videos.is_empty()
+                && m.videos.iter().all(|video| video.video_type.trim() == "战技测试");
+            let reason = if m.videos.is_empty() {
+                "no_highlight_records"
+            } else if is_training {
+                report.training_records += 1;
+                "training_records"
+            } else {
+                report.missing_match_ids += 1;
+                "missing_match_ids"
+            };
             report.skipped_records += 1;
-            report.records.push(serde_json::json!({"fingerprint":fingerprint(),"reason":"missing_match_ids"}));
+            report.records.push(serde_json::json!({"fingerprint":fingerprint(),"reason":reason}));
             continue;
         }
         if match_ids[&m.matches_id] > 1 {
@@ -758,6 +811,7 @@ pub fn scrape_wonderful_dir_with_mode(
         result: Result<crate::parser::model::WonderfulDbFile, (&'static str, String)>,
         nick: Option<String>,
         tag: Option<String>,
+        former_names: Option<Vec<String>>,
         achievements: Vec<SnapshotAchievement>,
         match_details: Vec<crate::parser::model::SnapshotMatchDetail>,
         snapshot_meta: Option<SourceFileMeta>,
@@ -769,7 +823,7 @@ pub fn scrape_wonderful_dir_with_mode(
         .par_iter()
         .map(|&(idx, (openid, path, source_meta))| {
             let snapshot_meta = snapshot_file_meta(dir, openid);
-            let (nick, tag, achievements, match_details, snapshot_valid, retry_snapshot) =
+            let (nick, tag, former_names, achievements, match_details, snapshot_valid, retry_snapshot) =
                 read_snapshot_for_account(dir, openid, identity_for_parse.as_ref(), app.is_some());
             let result = parser::parse_wonderful_db(path, openid)
                 .map_err(|e| (e.code(), format!("parse {}: {}", path.display(), e)));
@@ -781,6 +835,7 @@ pub fn scrape_wonderful_dir_with_mode(
                 result,
                 nick,
                 tag,
+                former_names,
                 achievements,
                 match_details,
                 snapshot_meta,
@@ -868,17 +923,23 @@ pub fn scrape_wonderful_dir_with_mode(
                     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                         .map_err(|e| e.to_string())?;
 
-                    // Empty data clears stale native matches and errors. Retain identity
-                    // so a named account can explain that no local highlights exist.
+                    // Empty sources can clear stale matches while retaining verified
+                    // names and user preferences for the next recording.
                     if file.matches.is_empty() && partial_error.is_none() {
-                        purge_empty_account(&tx, &pa.openid).map_err(|e| e.to_string())?;
-                        let has_name = pa.nick.as_deref().is_some_and(|n| !n.trim().is_empty())
+                        let has_name = pa.nick.is_some()
                             || tx.query_row(
-                                "SELECT EXISTS(SELECT 1 FROM account_preferences WHERE openid = ?1
-                                 AND TRIM(COALESCE(custom_name, '')) <> '')",
+                                "SELECT EXISTS(
+                                   SELECT 1 FROM account_preferences WHERE openid = ?1
+                                     AND TRIM(COALESCE(custom_name, '')) <> ''
+                                   UNION ALL
+                                   SELECT 1 FROM accounts WHERE openid = ?1
+                                     AND former_names_json IS NOT NULL
+                                 )",
                                 [&pa.openid], |row| row.get::<_, bool>(0),
                             ).map_err(|e| e.to_string())?;
                         if has_name {
+                            purge_stale_matches(&tx, &pa.openid, &HashSet::new())
+                                .map_err(|error| error.to_string())?;
                             upsert_account(
                                 &tx,
                                 &pa.openid,
@@ -887,6 +948,7 @@ pub fn scrape_wonderful_dir_with_mode(
                                 pa.snapshot_meta,
                                 pa.nick.clone(),
                                 pa.tag.clone(),
+                                pa.former_names.as_deref(),
                                 &pa.achievements,
                                 &pa.match_details,
                                 pa.snapshot_valid,
@@ -895,6 +957,8 @@ pub fn scrape_wonderful_dir_with_mode(
                                 now,
                             )
                             .map_err(|e| e.to_string())?;
+                        } else {
+                            purge_empty_account(&tx, &pa.openid).map_err(|e| e.to_string())?;
                         }
                         tx.commit().map_err(|e| e.to_string())?;
                         return Ok((0, 0, 0));
@@ -908,6 +972,7 @@ pub fn scrape_wonderful_dir_with_mode(
                         pa.snapshot_meta,
                         pa.nick.clone(),
                         pa.tag.clone(),
+                        pa.former_names.as_deref(),
                         &pa.achievements,
                         &pa.match_details,
                         pa.snapshot_valid,
@@ -956,10 +1021,12 @@ pub fn scrape_wonderful_dir_with_mode(
                 };
 
                 if let Some(message) = &partial_error {
-                    summary.errors_seen += 1;
+                    let has_warning = super::warning_ack::visible_diagnostics(conn, &pa.openid, message)
+                        .map_err(|error| error.to_string())?.0.is_some();
+                    summary.errors_seen += usize::from(has_warning);
                     if app.is_some() {
                         crate::app_log::write(
-                            crate::app_log::LogLevel::Warn,
+                            if has_warning { crate::app_log::LogLevel::Warn } else { crate::app_log::LogLevel::Info },
                             "account-read",
                             format!(
                                 "account={} code=partial_records; valid records updated; {message}",
@@ -1052,6 +1119,7 @@ pub fn scrape_wonderful_dir_with_mode(
                         pa.snapshot_meta,
                         pa.nick.clone(),
                         pa.tag.clone(),
+                        pa.former_names.as_deref(),
                         &pa.achievements,
                         &pa.match_details,
                         pa.snapshot_valid,
@@ -1224,6 +1292,19 @@ mod tests {
             scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Incremental, None)
                 .unwrap();
         assert_eq!(fresh.skipped_accounts, 1);
+        // A rotated snapshot may contain only the new nickname.
+        write_encrypted_fixture(
+            &dir.join("snapshot123"),
+            "123",
+            r#"{"key_snapshot_list123":[{"matches_time":10,"matches_id":"fixture-match","snapshot":{"ss_nick":"Renamed","ss_nick_id":"9001","ss_type":"match","ss_achieve_type":"mvp"}}]}"#,
+        );
+        scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Incremental, None)
+            .unwrap();
+        let renamed = crate::library::db::load_library_view(&conn, "fixture").unwrap();
+        assert_eq!(renamed.accounts[0].nick.as_deref(), Some("Renamed"));
+        assert_eq!(renamed.accounts[0].tag.as_deref(), Some("9001"));
+        assert_eq!(renamed.accounts[0].former_names, ["Fixture"]);
+
         std::fs::remove_file(dir.join("snapshot123")).unwrap();
         scrape_wonderful_dir_with_mode(&conn, &dir, "test", ScrapeMode::Full, None).unwrap();
         let view = crate::library::db::load_library_view(&conn, "fixture").unwrap();
@@ -1260,6 +1341,9 @@ mod tests {
         mixed["key_wonderful_list_123"].as_array_mut().unwrap().push(serde_json::json!({
             "matches_id":"", "mode":"competitive", "videos":[{"video_id":"incomplete-video","video_type":"战技测试"}]
         }));
+        mixed["key_wonderful_list_123"].as_array_mut().unwrap().push(serde_json::json!({
+            "matches_id":"", "videos":[{"video_id":"highlight-without-match","video_type":"击杀集锦"}]
+        }));
         let bytes = write_encrypted_fixture(&dir.join("123"), "123", &mixed.to_string());
         for mode in [ScrapeMode::Full, ScrapeMode::Incremental, ScrapeMode::Full] {
             let summary = scrape_wonderful_dir_with_mode(&conn, &dir, "test", mode, None).unwrap();
@@ -1269,7 +1353,7 @@ mod tests {
                     summary.errors_seen,
                     summary.skipped_accounts
                 ),
-                (1, 1, 0)
+                (1, 0, 0)
             );
             let view = crate::library::db::load_library_view(&conn, "fixture").unwrap();
             assert_eq!(
@@ -1277,13 +1361,11 @@ mod tests {
                 2,
                 "new match must load without deleting old data"
             );
-            assert_eq!(view.total_errors, 1);
+            assert_eq!(view.total_errors, 0);
+            assert_eq!(view.scan_notices[0].missing_match_ids, 1);
             let account = &view.accounts[0];
-            assert_eq!(account.error_code.as_deref(), Some("partial_records"));
+            assert!(account.error.is_none());
             assert_eq!(account.custom_name.as_deref(), Some("Saved name"));
-            let counts: serde_json::Value =
-                serde_json::from_str(account.error.as_ref().unwrap()).unwrap();
-            assert_eq!(counts["skipped_records"], 1);
             let detail = crate::library::db::load_match_rounds(&conn, "123", "new-match").unwrap();
             assert_eq!(
                 detail.open_id, "123",

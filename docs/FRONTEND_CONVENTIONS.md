@@ -53,13 +53,15 @@ records show a short incomplete-stat tooltip rather than invented full-match sta
 Account read failures use the optional backend `errorCode` and curated copy in
 `utils/account-status.ts` for the sidebar tooltip and list empty state. Keep raw
 `error` details in diagnostics; never render private paths or identifiers from
-them as user-facing error text. Named empty accounts remain visible with zero
-highlights and a normal empty state. An encrypted empty object is valid empty
+them as user-facing error text. Automatically discovered empty accounts are
+hidden unless there is a read failure, a warning, or a custom display name.
+The account row tooltip and accessible description include known former names. An encrypted empty object is valid empty
 highlight data, not a failure or evidence that recording was disabled.
 `partial_records` means valid matches were updated while individual records were
 quarantined. Keep that account name and match count visible; show a warning and
 the validated skipped count without marking the entire account as unreadable.
-Its warning button opens a popconfirm before acknowledging the exact displayed
+Missing-match-ID highlights appear in the library scan details.
+The sidebar warning button opens a popconfirm before acknowledging the exact displayed
 revision. Only the reviewed record fingerprints are silenced; source files stay
 read-only, and new warning fingerprints remain visible.
 

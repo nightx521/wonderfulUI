@@ -18,25 +18,34 @@ fn records(error: &str) -> Option<Vec<Value>> {
     }
     Some(records.clone())
 }
-pub fn visible_error(
+pub fn visible_diagnostics(
     conn: &Connection,
     openid: &str,
     error: &str,
-) -> rusqlite::Result<Option<String>> {
+) -> rusqlite::Result<(Option<String>, usize)> {
     let Some(records) = records(error) else {
-        return Ok(Some(error.into()));
+        return Ok((Some(error.into()), 0));
     };
     let mut statement =
         conn.prepare("SELECT fingerprint FROM ignored_record_warnings WHERE openid=?1")?;
     let known = statement
         .query_map([openid], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<HashSet<_>>>()?;
+    let mut missing_match_ids = 0;
     let remaining: Vec<_> = records
         .into_iter()
         .filter(|r| !known.contains(r["fingerprint"].as_str().unwrap()))
+        .filter(|r| match r["reason"].as_str() {
+            Some("training_records" | "no_highlight_records") => false,
+            Some("missing_match_ids") => {
+                missing_match_ids += 1;
+                false
+            }
+            _ => true,
+        })
         .collect();
     if remaining.is_empty() {
-        return Ok(None);
+        return Ok((None, missing_match_ids));
     }
     let mut next: Value = serde_json::from_str(error).unwrap();
     next["skipped_records"] = remaining.len().into();
@@ -51,8 +60,9 @@ pub fn visible_error(
             .count()
             .into();
     }
+    next["training_records"] = 0.into();
     next["records"] = remaining.into();
-    Ok(Some(next.to_string()))
+    Ok((Some(next.to_string()), missing_match_ids))
 }
 pub fn confirm(conn: &Connection, openid: &str, expected: &str) -> Result<(), String> {
     let transaction = conn
@@ -62,7 +72,7 @@ pub fn confirm(conn: &Connection, openid: &str, expected: &str) -> Result<(), St
         .optional().map_err(|_|"暂时无法读取异常记录")?.flatten();
     let error = error.ok_or("异常记录已更新，请刷新后重试")?;
     let visible =
-        visible_error(&transaction, openid, &error).map_err(|_| "暂时无法读取异常记录")?;
+        visible_diagnostics(&transaction, openid, &error).map_err(|_| "暂时无法读取异常记录")?.0;
     let value: Value =
         serde_json::from_str(expected).map_err(|_| "异常记录已更新，请刷新后重试")?;
     let current: Value =
@@ -71,7 +81,7 @@ pub fn confirm(conn: &Connection, openid: &str, expected: &str) -> Result<(), St
     if current != value {
         return Err("异常记录已更新，请刷新后重试".into());
     }
-    let records = records(&error).ok_or("请先执行全量扫描，再确认忽略异常记录")?;
+    let records = records(&current.to_string()).ok_or("请先执行全量扫描，再确认忽略异常记录")?;
     for record in records {
         transaction.execute("INSERT OR IGNORE INTO ignored_record_warnings(openid,fingerprint,confirmed_at) VALUES(?1,?2,?3)",params![openid,record["fingerprint"].as_str().unwrap(),super::now_ms()])
             .map_err(|_|"暂时无法保存忽略设置")?;
@@ -88,20 +98,20 @@ mod tests {
     fn only_confirmed_records_are_silenced_and_new_errors_are_still_visible() {
         let conn = Connection::open_in_memory().unwrap();
         super::super::db::migrate(&conn).unwrap();
-        let error=serde_json::json!({"skipped_records":1,"records":[{"fingerprint":"a".repeat(64),"reason":"missing_match_ids"}]}).to_string();
+        let error=serde_json::json!({"skipped_records":1,"records":[{"fingerprint":"a".repeat(64),"reason":"conflicting_records"}]}).to_string();
         conn.execute("INSERT INTO accounts(openid,source_id,last_seen_at,parse_error,parse_error_code)VALUES('fixture','aclos',0,?1,'partial_records')",[&error]).unwrap();
-        let visible = visible_error(&conn, "fixture", &error).unwrap().unwrap();
+        let visible = visible_diagnostics(&conn, "fixture", &error).unwrap().0.unwrap();
         assert!(confirm(&conn, "fixture", "{}").is_err());
         confirm(&conn, "fixture", &visible).unwrap();
-        assert!(visible_error(&conn, "fixture", &error).unwrap().is_none());
+        assert!(visible_diagnostics(&conn, "fixture", &error).unwrap().0.is_none());
         let mut changed: Value = serde_json::from_str(&error).unwrap();
         changed["records"]
             .as_array_mut()
             .unwrap()
             .push(serde_json::json!({"fingerprint":"b".repeat(64),"reason":"conflicting_records"}));
         changed["skipped_records"] = 2.into();
-        let visible = visible_error(&conn, "fixture", &changed.to_string())
-            .unwrap()
+        let visible = visible_diagnostics(&conn, "fixture", &changed.to_string())
+            .unwrap().0
             .unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&visible).unwrap()["skipped_records"],

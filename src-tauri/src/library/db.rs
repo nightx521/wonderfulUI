@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Result};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 8;
+pub const CURRENT_SCHEMA_VERSION: i64 = 9;
 const LIBRARY_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 static MIGRATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -114,6 +114,7 @@ fn schema_is_current(conn: &Connection) -> Result<bool> {
         "parse_error",
         "parse_error_code",
         "match_details_json",
+        "former_names_json",
         "source_size_bytes",
         "source_mtime_ms",
         "snapshot_size_bytes",
@@ -343,6 +344,14 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    if !column_exists(conn, "accounts", "former_names_json")? {
+        conn.execute_batch(
+            "SAVEPOINT add_account_name_history;
+             ALTER TABLE accounts ADD COLUMN former_names_json TEXT;
+             UPDATE accounts SET source_size_bytes = NULL;
+             RELEASE add_account_name_history;",
+        )?;
+    }
     if !column_exists(conn, "scrape_jobs", "skipped_accounts")? {
         conn.execute(
             "ALTER TABLE scrape_jobs ADD COLUMN skipped_accounts INTEGER NOT NULL DEFAULT 0",
@@ -382,7 +391,7 @@ pub fn load_library_view(conn: &Connection, dir: impl Into<String>) -> Result<Li
          WHERE openid = ?1
          ORDER BY matches_id",
     )?;
-    // Keep named empty accounts and failures; hide anonymous empty shells.
+    // Load candidates before filtering on merged matches and visible diagnostics.
     let mut accounts_stmt = conn.prepare(
         "SELECT
             a.openid,
@@ -393,11 +402,12 @@ pub fn load_library_view(conn: &Connection, dir: impl Into<String>) -> Result<Li
             a.parse_error,
             p.custom_name,
             a.parse_error_code,
-            a.match_details_json
+            a.match_details_json,
+            a.former_names_json
          FROM accounts a
          LEFT JOIN matches m ON m.openid = a.openid
          LEFT JOIN account_preferences p ON p.openid = a.openid
-         GROUP BY a.openid, a.source_path, a.nick, a.tag, a.parse_error, a.parse_error_code, a.match_details_json, p.custom_name, p.sort_order
+         GROUP BY a.openid, a.source_path, a.nick, a.tag, a.parse_error, a.parse_error_code, a.match_details_json, a.former_names_json, p.custom_name, p.sort_order
          HAVING COUNT(m.id) > 0
             OR (a.parse_error IS NOT NULL AND TRIM(a.parse_error) <> '')
             OR TRIM(COALESCE(a.nick, '')) <> ''
@@ -426,6 +436,9 @@ pub fn load_library_view(conn: &Connection, dir: impl Into<String>) -> Result<Li
                 nick: row.get(3)?,
                 tag: row.get(4)?,
                 custom_name: row.get(6)?,
+                former_names: row.get::<_, Option<String>>(9)?
+                    .and_then(|json| serde_json::from_str(&json).ok())
+                    .unwrap_or_default(),
                 achievements,
                 match_details: row
                     .get::<_, Option<String>>(8)?
@@ -468,20 +481,42 @@ pub fn load_library_view(conn: &Connection, dir: impl Into<String>) -> Result<Li
     // Strip rounds once after deserialize (bulk list must stay rounds-free for IPC size).
     let corrupt_history = super::history::merge_view(conn, &mut accounts, &mut matches)?;
     strip_match_rounds(&mut matches);
+    let mut scan_notices = Vec::new();
     for account in &mut accounts {
-        if account.error_code.as_deref()==Some("partial_records") {
-            if let Some(error)=&account.error {
-                account.error=super::warning_ack::visible_error(conn,&account.openid,error)?;
-                if account.error.is_none(){account.error_code=None;}
+        if account.error_code.as_deref() == Some("partial_records") {
+            if let Some(error) = &account.error {
+                let (warning, missing_match_ids) =
+                    super::warning_ack::visible_diagnostics(conn, &account.openid, error)?;
+                if missing_match_ids > 0 {
+                    scan_notices.push(crate::parser::model::ScanNotice {
+                        openid: account.openid.clone(),
+                        label: account.custom_name.clone()
+                            .or_else(|| account.nick.clone().map(|nick| {
+                                account.tag.as_ref().map_or_else(|| nick.clone(), |tag| format!("{nick}#{tag}"))
+                            }))
+                            .unwrap_or_else(|| account.openid.clone()),
+                        missing_match_ids,
+                    });
+                }
+                account.error = warning;
+                if account.error.is_none() {
+                    account.error_code = None;
+                }
             }
         }
     }
+    accounts.retain(|account| {
+        account.match_count > 0
+            || account.error.is_some()
+            || account.custom_name.as_deref().is_some_and(|name| !name.trim().is_empty())
+    });
     let account_errors = accounts.iter().filter(|a|a.error.as_ref().is_some_and(|e|!e.is_empty())).count() as i64;
 
     Ok(LibraryLoadResult {
         dir: dir.into(),
         accounts,
         matches,
+        scan_notices,
         total_errors: (account_errors + corrupt_matches) as usize + corrupt_history,
     })
 }
@@ -588,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_retains_legacy_errors_and_named_empty_accounts() {
+    fn migration_retains_legacy_errors_and_hides_automatically_named_empty_accounts() {
         let conn = open_memory_for_test().unwrap();
         migrate(&conn).unwrap();
         conn.execute("ALTER TABLE accounts DROP COLUMN parse_error_code", [])
@@ -606,7 +641,7 @@ mod tests {
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
         let view = load_library_view(&conn, "fixture").unwrap();
-        assert_eq!(view.accounts.len(), 2);
+        assert_eq!(view.accounts.len(), 1);
         assert_eq!(view.total_errors, 1);
         let legacy = view.accounts.iter().find(|a| a.openid == "legacy").unwrap();
         assert_eq!(legacy.error.as_deref(), Some("old error"));
@@ -615,7 +650,7 @@ mod tests {
         assert!(view
             .accounts
             .iter()
-            .any(|a| a.openid == "named" && a.error.is_none()));
+            .all(|a| a.openid != "named"));
     }
 
     #[test]

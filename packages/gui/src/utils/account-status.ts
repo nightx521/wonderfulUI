@@ -69,7 +69,7 @@ export function accountReadFeedback(account?: { error?: string; errorCode?: stri
     } catch { /* Older diagnostics may not contain structured counts. */ }
     return {
       title: `部分记录已跳过${count}`,
-      cause: '部分记录缺少对局编号或存在编号冲突，正常记录已更新，原有资料已保留。',
+      cause: '部分记录的账号归属或编号需要核对，正常记录已更新，原有资料已保留。',
       action: '这不影响其它对局；源数据补全后刷新可重试，详细分类见日志。',
     };
   }

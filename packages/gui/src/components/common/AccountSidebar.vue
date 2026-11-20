@@ -34,6 +34,7 @@
         :tabindex="rowTabIndex(a.openid)"
         :data-account-id="a.openid"
         :data-tip="rowTip(a)"
+        :aria-description="formerNamesText(a) || undefined"
         @click="onSelect(a.openid)"
         @keydown="onAccountKeydown($event, a.openid)"
       >
@@ -68,7 +69,7 @@
         </button>
         <span class="account-count">{{ countText(a) }}</span>
         <button v-if="a.error && a.errorCode === 'partial_records'" type="button" class="account-warning-btn"
-          aria-label="处理已跳过的异常记录" :data-tip="rowTip(a)" @click.stop="openWarning($event,a)">!</button>
+          aria-label="处理已跳过的异常记录" :data-tip="warningTip(a)" @click.stop="openWarning($event,a)">!</button>
       </div>
       </div>
     </div>
@@ -193,14 +194,20 @@ function rowTip(a: Account): string {
       ? `所有账户的高光\n${filteredCount(a)} / ${account.matches.length} 条命中`
       : `所有账户的高光\n${account.matches.length} 条高光`;
   }
+  const formerNames = formerNamesText(a);
+  const detail = warningTip(a) || (a.matchCount === 0
+    ? '暂无高光'
+    : hasActiveFilters.value ? `${countText(a)} 条命中` : `${a.matchCount} 条高光`);
+  return [accountLabel(a), formerNames, detail].filter(Boolean).join('\n');
+}
+
+function formerNamesText(a: Account): string {
+  return a.formerNames?.length ? `曾用名：${a.formerNames.join('、')}` : '';
+}
+
+function warningTip(a: Account): string {
   const failure = accountReadFeedback(a);
-  if (failure) return `${failure.title}\n${failure.cause}\n${failure.action}`;
-  if (a.matchCount === 0) return '暂无本机高光\n已读取账户信息，高光记录为空；生成高光后刷新资料库';
-  const label = accountLabel(a);
-  const cnt = countText(a);
-  return hasActiveFilters.value
-    ? `${label}\n${cnt} 条命中\nopenid · ${a.openid}`
-    : `${label}\n${cnt} 条高光\nopenid · ${a.openid}`;
+  return failure ? `${failure.title}\n${failure.cause}\n${failure.action}` : '';
 }
 
 function rowClass(a: Account): Record<string, boolean> {
